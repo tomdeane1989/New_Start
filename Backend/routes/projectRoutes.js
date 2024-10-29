@@ -5,31 +5,24 @@ const router = express.Router();
 const projectController = require('../controllers/projectController');
 const { isAuthenticated } = require('../middleware/authMiddleware');
 
-// Create new project
-router.post('/', isAuthenticated, projectController.createProject);
+// Project routes
+router.post('/', isAuthenticated, projectController.createProject); // Create new project
+router.get('/', isAuthenticated, projectController.getProjectsByUserId); // Get all projects for authenticated user
+router.get('/:id', isAuthenticated, projectController.getProjectById); // Get specific project by ID
+router.put('/:id', isAuthenticated, projectController.isProjectOwner, projectController.updateProject); // Update project by ID
+router.delete('/:id', isAuthenticated, projectController.isProjectOwner, projectController.deleteProject); // Delete project by ID
 
-// Get all projects (or based on user ID)
-router.get('/', isAuthenticated, projectController.getProjectsByUserId);
+// Collaborator routes
+router.post('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.addCollaborator); // Add collaborator to project
+router.get('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.getCollaborators); // Get all collaborators for a project
+router.put('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.updateCollaborator); // Update a collaborator's role
+router.delete('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteCollaborator); // Delete collaborator from project
 
-// Get a specific project by ID
-router.get('/:id', isAuthenticated, projectController.getProjectById);
-
-// Update project by ID
-router.put('/:id', isAuthenticated, projectController.isProjectOwner, projectController.updateProject);
-
-// Delete project by ID
-router.delete('/:id', isAuthenticated, projectController.isProjectOwner, projectController.deleteProject);
-
-// Add project collaborators
-router.post('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.addCollaborator);
-
-// Get project collaborators
-router.get('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.getCollaborators);
-
-// Update a collaborator's role in a project
-router.put('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.updateCollaborator);
-
-// Delete a collaborator from a project
-router.delete('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteCollaborator);
+// Stage routes
+router.get('/:project_id/stages', isAuthenticated, projectController.isProjectOwner, projectController.getStages); // Get all stages for a project
+router.get('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.getStageById); // Get specific stage by ID
+router.post('/:project_id/stages', isAuthenticated, projectController.isProjectOwner, projectController.createStage); // Create custom stage
+router.put('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.updateStage); // Update existing custom stage
+router.delete('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteStage); // Delete custom stage
 
 module.exports = router;

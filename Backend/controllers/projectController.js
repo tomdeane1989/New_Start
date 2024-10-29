@@ -1,8 +1,21 @@
 // controllers/projectController.js
 
 const Project = require('../models/project');
+const Stage = require('../models/stage'); // Import the Stage model
 const User = require('../models/user');
 const ProjectCollaborators = require('../models/projectCollaborators.js'); // Import join table
+
+// Define default stages
+const defaultStages = [
+    { stage_name: 'Viewings', description: 'Initial viewings of the property', stage_order: 1 },
+    { stage_name: 'Offer Stage', description: 'Stage of making an offer on the property', stage_order: 2 },
+    { stage_name: 'Offer Accepted', description: 'Offer accepted by the seller', stage_order: 3 },
+    { stage_name: 'Legal, Surveys, & Compliance', description: 'Legal checks, surveys, and compliance checks', stage_order: 4 },
+    { stage_name: 'Mortgage Application', description: 'Processing of buyer’s mortgage application', stage_order: 5 },
+    { stage_name: 'Contract Exchange', description: 'Exchange of contracts between buyer and seller', stage_order: 6 },
+    { stage_name: 'Key Exchange', description: 'Final exchange of keys and property ownership', stage_order: 7 },
+    { stage_name: 'Misc', description: 'For any tasks outside of the standard stages', stage_order: 8, is_custom: true }
+];
 
 // Middleware function to verify project ownership
 function isProjectOwner(req, res, next) {
@@ -29,7 +42,7 @@ function isProjectOwner(req, res, next) {
         });
 }
 
-// Create a new project
+// Create a new project and add default stages
 async function createProject(req, res) {
     try {
         const { project_name, description, start_date, end_date, status } = req.body;
@@ -39,6 +52,7 @@ async function createProject(req, res) {
             return res.status(400).json({ error: "Owner ID is missing or invalid." });
         }
 
+        // Step 1: Create the project
         const project = await Project.create({
             project_name,
             description,
@@ -48,7 +62,17 @@ async function createProject(req, res) {
             owner_id
         });
 
-        res.status(201).json({ message: 'Project created successfully', project });
+        // Step 2: Add default stages to the project
+        const stagesToAdd = defaultStages.map(stage => ({
+            ...stage,
+            project_id: project.project_id,
+            created_at: new Date(),
+            updated_at: new Date()
+        }));
+
+        await Stage.bulkCreate(stagesToAdd); // Insert all stages in one go
+
+        res.status(201).json({ message: 'Project and default stages created successfully', project });
     } catch (error) {
         console.error("Error in createProject:", error);
         res.status(500).json({ error: 'Error creating project' });
@@ -164,6 +188,102 @@ async function getCollaborators(req, res) {
     }
 }
 
+// New function to get all stages for a project
+async function getStages(req, res) {
+    try {
+        const { project_id } = req.params;
+        const stages = await Stage.findAll({ where: { project_id } });
+        res.status(200).json(stages);
+    } catch (error) {
+        console.error("Error in getStages:", error);
+        res.status(500).json({ error: "Error retrieving stages" });
+    }
+}
+
+// Get a specific stage by ID
+async function getStageById(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+        console.log("Fetching stage with project_id:", project_id, "and stage_id:", stage_id);
+
+        // Ensure `project_id` and `stage_id` are integers for query matching
+        const stage = await Stage.findOne({
+            where: {
+                project_id: parseInt(project_id, 10),
+                stage_id: parseInt(stage_id, 10)
+            }
+        });
+
+        if (!stage) {
+            console.log("Stage not found for project:", project_id, "and stage_id:", stage_id);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        console.log("Stage found:", stage);  // Log the retrieved stage
+        res.status(200).json(stage);
+    } catch (error) {
+        console.error("Error in getStageById:", error);
+        res.status(500).json({ error: "Error retrieving stage" });
+    }
+}
+
+// New function to create a custom stage
+async function createStage(req, res) {
+    try {
+        const { project_id } = req.params;
+        const { stage_name, description, stage_order } = req.body;
+
+        const newStage = await Stage.create({
+            project_id,
+            stage_name,
+            description,
+            stage_order,
+            is_custom: true
+        });
+
+        res.status(201).json({ message: 'Custom stage created successfully', stage: newStage });
+    } catch (error) {
+        console.error("Error in createStage:", error);
+        res.status(500).json({ error: "Error creating stage" });
+    }
+}
+
+// Update an existing stage
+async function updateStage(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+        const { stage_name, description, stage_order } = req.body;
+
+        const [updated] = await Stage.update(
+            { stage_name, description, stage_order },
+            { where: { project_id, stage_id, is_custom: true } }
+        );
+
+        if (!updated) return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        res.json({ message: 'Stage updated successfully' });
+    } catch (error) {
+        console.error("Error in updateStage:", error);
+        res.status(500).json({ error: "Error updating stage" });
+    }
+}
+
+// Delete an existing custom stage
+async function deleteStage(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+
+        const deleted = await Stage.destroy({
+            where: { project_id, stage_id, is_custom: true }
+        });
+
+        if (!deleted) return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        res.json({ message: 'Stage deleted successfully' });
+    } catch (error) {
+        console.error("Error in deleteStage:", error);
+        res.status(500).json({ error: "Error deleting stage" });
+    }
+}
+
 // Update a collaborator's role
 async function updateCollaborator(req, res) {
     try {
@@ -217,10 +337,15 @@ module.exports = {
     getProjectsByUserId,
     getCollaborators,
     addCollaborator,
+    getStages,
+    getStageById,
+    createStage,
+    updateStage,
+    deleteStage,
     getProjectById,
     updateProject,
-    updateCollaborator,    // Export update collaborator function
-    deleteCollaborator,    // Export delete collaborator function
+    updateCollaborator,
+    deleteCollaborator,
     deleteProject,
     isProjectOwner
 };
