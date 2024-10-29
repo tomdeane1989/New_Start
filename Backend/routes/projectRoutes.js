@@ -21,7 +21,15 @@ router.put('/:id', isAuthenticated, projectController.isProjectOwner, projectCon
 router.delete('/:id', isAuthenticated, projectController.isProjectOwner, projectController.deleteProject);
 
 // Add project collaborators
-router.post('/:project_id/collaborators', isAuthenticated, projectController.addCollaborator);
+router.post('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.addCollaborator);
 
+// Get project collaborators
+router.get('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.getCollaborators);
+
+// Update a collaborator's role in a project
+router.put('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.updateCollaborator);
+
+// Delete a collaborator from a project
+router.delete('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteCollaborator);
 
 module.exports = router;
