@@ -5,6 +5,9 @@ const router = express.Router();
 const projectController = require('../controllers/projectController');
 const { isAuthenticated } = require('../middleware/authMiddleware');
 
+// Test ProjectCollaborators Association Route (Make sure this route is defined first to avoid conflicts)
+router.get('/test-collaborators', isAuthenticated, projectController.testProjectCollaboratorsAssociation);
+
 // Project routes
 router.post('/', isAuthenticated, projectController.createProject); // Create new project
 router.get('/', isAuthenticated, projectController.getProjectsByUserId); // Get all projects for authenticated user
@@ -24,5 +27,6 @@ router.get('/:project_id/stages/:stage_id', isAuthenticated, projectController.i
 router.post('/:project_id/stages', isAuthenticated, projectController.isProjectOwner, projectController.createStage); // Create custom stage
 router.put('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.updateStage); // Update existing custom stage
 router.delete('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteStage); // Delete custom stage
+
 
 module.exports = router;

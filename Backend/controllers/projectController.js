@@ -1,9 +1,7 @@
 // controllers/projectController.js
 
-const Project = require('../models/project');
-const Stage = require('../models/stage'); // Import the Stage model
-const User = require('../models/user');
-const ProjectCollaborators = require('../models/projectCollaborators.js'); // Import join table
+const db = require('../models'); // Import all models via db
+const { Project, Stage, User, ProjectCollaborators } = db; // Destructure specific models as needed
 
 // Define default stages
 const defaultStages = [
@@ -90,12 +88,37 @@ async function getAllProjects(req, res) {
     }
 }
 
-// Get projects by authenticated user ID
+// Get projects by authenticated user
 async function getProjectsByUserId(req, res) {
+    console.log("Checking Project model:", Project);  // Confirm Project model is loaded
     try {
-        const owner_id = req.user.id;
-        const projects = await Project.findAll({ where: { owner_id } });
-        res.status(200).json(projects);
+        const userId = req.user.id;
+
+        // Fetch projects where the user is the owner, including collaborators
+        const ownedProjects = await Project.findAll({
+            where: { owner_id: userId },
+            include: [{ model: ProjectCollaborators, as: 'collaborators' }]
+        });
+        console.log("Owned Projects:", ownedProjects);
+
+        // Fetch projects where the user is a collaborator, with the alias specified
+        const collaboratorProjects = await Project.findAll({
+            include: [{
+                model: ProjectCollaborators,
+                as: 'collaborators',
+                where: { user_id: userId },
+                attributes: []
+            }]
+        });
+        console.log("Collaborator Projects:", collaboratorProjects);
+
+        // Merge owned and collaborated projects, removing duplicates by project_id
+        const allProjects = [...ownedProjects, ...collaboratorProjects];
+        const uniqueProjects = allProjects.filter((project, index, self) =>
+            index === self.findIndex((p) => p.project_id === project.project_id)
+        );
+
+        res.status(200).json(uniqueProjects);
     } catch (error) {
         console.error('Error in getProjectsByUserId:', error);
         res.status(500).json({ error: 'Error retrieving user projects' });
@@ -171,14 +194,17 @@ async function addCollaborator(req, res) {
         res.status(500).json({ error: 'Error adding collaborator' });
     }
 }
+// controllers/projectController.js
 
 // Get all collaborators for a project
 async function getCollaborators(req, res) {
     try {
         const { project_id } = req.params;
+
+        // Query collaborators with associated user details using correct alias
         const collaborators = await ProjectCollaborators.findAll({
             where: { project_id },
-            include: [{ model: User, attributes: ['email', 'first_name', 'last_name'] }]
+            include: [{ model: User, as: 'user', attributes: ['email', 'first_name', 'last_name'] }]
         });
 
         res.status(200).json(collaborators);
@@ -330,7 +356,30 @@ async function deleteProject(req, res) {
         res.status(500).json({ error: 'Error deleting project' });
     }
 }
+// testing start
 
+const testProjectCollaboratorsAssociation = async (req, res) => {
+    try {
+        // Attempt to retrieve all ProjectCollaborators with their associated Project
+        const collaborators = await ProjectCollaborators.findAll({
+            include: [
+                {
+                    model: Project,
+                    as: 'project'  // Ensure this matches the alias in your model
+                }
+            ]
+        });
+
+        res.status(200).json(collaborators);
+    } catch (error) {
+        console.error("Error in testProjectCollaboratorsAssociation:", error);
+        res.status(500).json({ error: "Error testing ProjectCollaborators association" });
+    }
+};
+
+
+
+///testing stop
 module.exports = {
     createProject,
     getAllProjects,
@@ -347,5 +396,6 @@ module.exports = {
     updateCollaborator,
     deleteCollaborator,
     deleteProject,
-    isProjectOwner
+    isProjectOwner,
+    testProjectCollaboratorsAssociation  // Added a comma before this line
 };

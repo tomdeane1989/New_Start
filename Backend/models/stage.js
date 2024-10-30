@@ -4,58 +4,67 @@ const { Model, DataTypes } = require('sequelize');
 const sequelize = require('../config/database'); // Adjust this path if your database config is located elsewhere
 const Project = require('./project'); // Import the Project model for association
 
-class Stage extends Model {}
+// models/stage.js
 
-Stage.init({
-    stage_id: {
+
+module.exports = (sequelize, DataTypes) => {
+    const { Model } = require('sequelize'); // Import Model directly from Sequelize
+  
+    class Stage extends Model {}
+  
+    Stage.init({
+      stage_id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
         autoIncrement: true
-    },
-    project_id: {
+      },
+      project_id: {
         type: DataTypes.INTEGER,
         allowNull: false,
         references: {
-            model: Project,
-            key: 'project_id'
+          model: 'projects', // Using the table name here to avoid circular dependency
+          key: 'project_id'
         },
         onDelete: 'CASCADE'
-    },
-    stage_name: {
+      },
+      stage_name: {
         type: DataTypes.STRING,
         allowNull: false
-    },
-    stage_order: {
+      },
+      stage_order: {
         type: DataTypes.INTEGER,
         allowNull: false
-    },
-    description: {
+      },
+      description: {
         type: DataTypes.STRING,
         allowNull: true
-    },
-    is_custom: {
+      },
+      is_custom: {
         type: DataTypes.BOOLEAN,
         allowNull: false,
         defaultValue: false
-    },
-    created_at: {
+      },
+      created_at: {
         type: DataTypes.DATE,
         allowNull: false,
         defaultValue: DataTypes.NOW
-    },
-    updated_at: {
+      },
+      updated_at: {
         type: DataTypes.DATE,
         allowNull: false,
         defaultValue: DataTypes.NOW
-    }
-}, {
-    sequelize,
-    modelName: 'Stage',
-    tableName: 'stages', // Ensures consistent table name
-    timestamps: false
-});
-
-// Define associations
-Stage.belongsTo(Project, { foreignKey: 'project_id', onDelete: 'CASCADE' });
-
-module.exports = Stage;
+      }
+    }, {
+      sequelize,
+      modelName: 'Stage',
+      tableName: 'stages', // Ensures consistent table name
+      timestamps: false
+    });
+  
+    // Define associations
+    Stage.associate = (models) => {
+      Stage.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project', onDelete: 'CASCADE' });
+    };
+  
+    return Stage;
+  };

@@ -1,4 +1,4 @@
-const User = require('../models/user');
+const { User } = require('../models'); // Ensure it pulls from db object
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
@@ -74,18 +74,17 @@ async function deleteUser(req, res) {
 async function loginUser(req, res) {
     const { email, password } = req.body;
     try {
-        const user = await User.findOne({ where: { email } });
-        if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        // Include user_id in the payload
-        const token = jwt.sign({ id: user.user_id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-        res.json({ message: 'Login successful', token });
+      const user = await User.findOne({ where: { email } });
+      if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      const token = jwt.sign({ id: user.user_id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+      res.json({ message: 'Login successful', token });
     } catch (error) {
-        console.error('Error in loginUser:', error);
-        res.status(500).json({ error: 'Error logging in' });
+      console.error('Error in loginUser:', error);
+      res.status(500).json({ error: 'Error logging in' });
     }
-}
+  }
 
      
 
