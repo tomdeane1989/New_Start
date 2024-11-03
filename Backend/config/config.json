@@ -3,7 +3,24 @@
     "username": "thomasdeane",
     "password": "test",
     "database": "project_db",
-    "host": "127.0.0.1",
-    "dialect": "postgres"
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  },
+  "test": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db_test",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  },
+  "production": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db_prod",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
   }
 }

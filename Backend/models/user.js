@@ -1,7 +1,7 @@
 const { Model, DataTypes } = require('sequelize');
 const bcrypt = require('bcrypt');
 const sequelize = require('../config/database');
-const { User } = require('../models'); // Ensure it pulls from db object
+//const { User } = require('../models'); // re engage this if anything breaks - also revert config file to incorrect .js model
 
 module.exports = (sequelize, DataTypes) => {
     class User extends Model {

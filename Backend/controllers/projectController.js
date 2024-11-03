@@ -41,23 +41,25 @@ function isProjectOwner(req, res, next) {
 }
 
 // Create a new project and add default stages
+//console.log("Authenticated User ID:", req.user?.id);
+
 async function createProject(req, res) {
     try {
         const { project_name, description, start_date, end_date, status } = req.body;
-        const owner_id = req.user?.id;
+        const owner_id = req.user?.id;  // Ensure owner_id is set from the authenticated user
 
         if (!owner_id) {
             return res.status(400).json({ error: "Owner ID is missing or invalid." });
         }
 
-        // Step 1: Create the project
+        // Step 1: Create the project with the owner_id
         const project = await Project.create({
             project_name,
             description,
             start_date,
             end_date,
             status,
-            owner_id
+            owner_id  // Include owner_id here
         });
 
         // Step 2: Add default stages to the project
@@ -92,23 +94,39 @@ async function getAllProjects(req, res) {
 async function getProjectsByUserId(req, res) {
     console.log("Checking Project model:", Project);  // Confirm Project model is loaded
     try {
-        const userId = req.user.id;
+        // Parse and validate userId
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            console.error("Invalid user ID:", req.user.id);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+        console.log("Validated user ID:", userId);
 
         // Fetch projects where the user is the owner, including collaborators
         const ownedProjects = await Project.findAll({
             where: { owner_id: userId },
-            include: [{ model: ProjectCollaborators, as: 'collaborators' }]
+            include: [
+                {
+                    model: ProjectCollaborators,
+                    as: 'collaborators',
+                    required: false,
+                    attributes: ['user_id', 'role']
+                }
+            ]
         });
         console.log("Owned Projects:", ownedProjects);
 
         // Fetch projects where the user is a collaborator, with the alias specified
         const collaboratorProjects = await Project.findAll({
-            include: [{
-                model: ProjectCollaborators,
-                as: 'collaborators',
-                where: { user_id: userId },
-                attributes: []
-            }]
+            include: [
+                {
+                    model: ProjectCollaborators,
+                    as: 'collaborators',
+                    where: { user_id: userId },
+                    attributes: ['project_id'],
+                    required: true  // Ensures only collaborator-linked projects are retrieved
+                }
+            ]
         });
         console.log("Collaborator Projects:", collaboratorProjects);
 
@@ -125,15 +143,46 @@ async function getProjectsByUserId(req, res) {
     }
 }
 
-// Get a specific project by project ID
 async function getProjectById(req, res) {
     try {
-        const { id } = req.params;
-        const project = await Project.findOne({ where: { project_id: id, owner_id: req.user?.id } });
-        if (!project) return res.status(404).json({ error: 'Project not found or unauthorized' });
-        res.json(project);
+        // Parse and validate projectId
+        const projectId = parseInt(req.params.id, 10);
+        if (isNaN(projectId)) {
+            console.error("Invalid project ID:", req.params.id);
+            return res.status(400).json({ error: 'Invalid project ID' });
+        }
+        console.log("Validated project ID:", projectId);
+
+        // Parse and validate userId
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            console.error("Invalid user ID:", req.user.id);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+        console.log("Validated user ID:", userId);
+
+        const project = await Project.findOne({
+            where: {
+                project_id: projectId,
+                owner_id: userId,
+            },
+            include: [
+                {
+                    model: ProjectCollaborators,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role'],
+                },
+            ],
+        });
+
+        if (!project) {
+            console.log("Project not found or unauthorized access for project ID:", projectId);
+            return res.status(404).json({ error: 'Project not found or unauthorized' });
+        }
+
+        res.status(200).json(project);
     } catch (error) {
-        console.error("Error in getProjectById:", error);
+        console.error('Error in getProjectById:', error);
         res.status(500).json({ error: 'Error retrieving project' });
     }
 }
