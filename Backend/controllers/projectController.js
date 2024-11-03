@@ -1,9 +1,7 @@
 // controllers/projectController.js
 
-const Project = require('../models/project');
-const Stage = require('../models/stage'); // Import the Stage model
-const User = require('../models/user');
-const ProjectCollaborators = require('../models/projectCollaborators.js'); // Import join table
+const db = require('../models'); // Import all models via db
+const { Project, Stage, User, ProjectCollaborators } = db; // Destructure specific models as needed
 
 // Define default stages
 const defaultStages = [
@@ -43,23 +41,25 @@ function isProjectOwner(req, res, next) {
 }
 
 // Create a new project and add default stages
+//console.log("Authenticated User ID:", req.user?.id);
+
 async function createProject(req, res) {
     try {
         const { project_name, description, start_date, end_date, status } = req.body;
-        const owner_id = req.user?.id;
+        const owner_id = req.user?.id;  // Ensure owner_id is set from the authenticated user
 
         if (!owner_id) {
             return res.status(400).json({ error: "Owner ID is missing or invalid." });
         }
 
-        // Step 1: Create the project
+        // Step 1: Create the project with the owner_id
         const project = await Project.create({
             project_name,
             description,
             start_date,
             end_date,
             status,
-            owner_id
+            owner_id  // Include owner_id here
         });
 
         // Step 2: Add default stages to the project
@@ -90,27 +90,99 @@ async function getAllProjects(req, res) {
     }
 }
 
-// Get projects by authenticated user ID
+// Get projects by authenticated user
 async function getProjectsByUserId(req, res) {
+    console.log("Checking Project model:", Project);  // Confirm Project model is loaded
     try {
-        const owner_id = req.user.id;
-        const projects = await Project.findAll({ where: { owner_id } });
-        res.status(200).json(projects);
+        // Parse and validate userId
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            console.error("Invalid user ID:", req.user.id);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+        console.log("Validated user ID:", userId);
+
+        // Fetch projects where the user is the owner, including collaborators
+        const ownedProjects = await Project.findAll({
+            where: { owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborators,
+                    as: 'collaborators',
+                    required: false,
+                    attributes: ['user_id', 'role']
+                }
+            ]
+        });
+        console.log("Owned Projects:", ownedProjects);
+
+        // Fetch projects where the user is a collaborator, with the alias specified
+        const collaboratorProjects = await Project.findAll({
+            include: [
+                {
+                    model: ProjectCollaborators,
+                    as: 'collaborators',
+                    where: { user_id: userId },
+                    attributes: ['project_id'],
+                    required: true  // Ensures only collaborator-linked projects are retrieved
+                }
+            ]
+        });
+        console.log("Collaborator Projects:", collaboratorProjects);
+
+        // Merge owned and collaborated projects, removing duplicates by project_id
+        const allProjects = [...ownedProjects, ...collaboratorProjects];
+        const uniqueProjects = allProjects.filter((project, index, self) =>
+            index === self.findIndex((p) => p.project_id === project.project_id)
+        );
+
+        res.status(200).json(uniqueProjects);
     } catch (error) {
         console.error('Error in getProjectsByUserId:', error);
         res.status(500).json({ error: 'Error retrieving user projects' });
     }
 }
 
-// Get a specific project by project ID
 async function getProjectById(req, res) {
     try {
-        const { id } = req.params;
-        const project = await Project.findOne({ where: { project_id: id, owner_id: req.user?.id } });
-        if (!project) return res.status(404).json({ error: 'Project not found or unauthorized' });
-        res.json(project);
+        // Parse and validate projectId
+        const projectId = parseInt(req.params.id, 10);
+        if (isNaN(projectId)) {
+            console.error("Invalid project ID:", req.params.id);
+            return res.status(400).json({ error: 'Invalid project ID' });
+        }
+        console.log("Validated project ID:", projectId);
+
+        // Parse and validate userId
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            console.error("Invalid user ID:", req.user.id);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+        console.log("Validated user ID:", userId);
+
+        const project = await Project.findOne({
+            where: {
+                project_id: projectId,
+                owner_id: userId,
+            },
+            include: [
+                {
+                    model: ProjectCollaborators,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role'],
+                },
+            ],
+        });
+
+        if (!project) {
+            console.log("Project not found or unauthorized access for project ID:", projectId);
+            return res.status(404).json({ error: 'Project not found or unauthorized' });
+        }
+
+        res.status(200).json(project);
     } catch (error) {
-        console.error("Error in getProjectById:", error);
+        console.error('Error in getProjectById:', error);
         res.status(500).json({ error: 'Error retrieving project' });
     }
 }
@@ -171,14 +243,17 @@ async function addCollaborator(req, res) {
         res.status(500).json({ error: 'Error adding collaborator' });
     }
 }
+// controllers/projectController.js
 
 // Get all collaborators for a project
 async function getCollaborators(req, res) {
     try {
         const { project_id } = req.params;
+
+        // Query collaborators with associated user details using correct alias
         const collaborators = await ProjectCollaborators.findAll({
             where: { project_id },
-            include: [{ model: User, attributes: ['email', 'first_name', 'last_name'] }]
+            include: [{ model: User, as: 'user', attributes: ['email', 'first_name', 'last_name'] }]
         });
 
         res.status(200).json(collaborators);
@@ -330,7 +405,30 @@ async function deleteProject(req, res) {
         res.status(500).json({ error: 'Error deleting project' });
     }
 }
+// testing start
 
+const testProjectCollaboratorsAssociation = async (req, res) => {
+    try {
+        // Attempt to retrieve all ProjectCollaborators with their associated Project
+        const collaborators = await ProjectCollaborators.findAll({
+            include: [
+                {
+                    model: Project,
+                    as: 'project'  // Ensure this matches the alias in your model
+                }
+            ]
+        });
+
+        res.status(200).json(collaborators);
+    } catch (error) {
+        console.error("Error in testProjectCollaboratorsAssociation:", error);
+        res.status(500).json({ error: "Error testing ProjectCollaborators association" });
+    }
+};
+
+
+
+///testing stop
 module.exports = {
     createProject,
     getAllProjects,
@@ -347,5 +445,6 @@ module.exports = {
     updateCollaborator,
     deleteCollaborator,
     deleteProject,
-    isProjectOwner
+    isProjectOwner,
+    testProjectCollaboratorsAssociation  // Added a comma before this line
 };
