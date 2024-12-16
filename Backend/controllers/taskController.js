@@ -1,122 +1,102 @@
+// Backend/controllers/taskController.js
 const { Op } = require('sequelize');
-const { Task, Project, Stage, taskassignment, User } = require('../models');  // Import necessary models
-
-
+const { Task, Project, Stage, TaskAssignment, User } = require('../models');
+const logger = require('../logger'); // Import Winston logger
 
 // Create a new task
 async function createTask(req, res) {
     try {
         const { project_id, stage_id, task_name, description, due_date, priority } = req.body;
-        const userId = req.user.id;  // The creator's ID, which will be set as the task owner
+        const userId = req.user.id;
 
-        // Verify project and stage validity
+        logger.info(`User ${userId} is creating a task in project ${project_id}, stage ${stage_id} with data: ${JSON.stringify(req.body)}`);
+
         const project = await Project.findByPk(project_id);
-        const stage = await Stage.findByPk(stage_id);
-        
-        if (!project || !stage) {
-            return res.status(400).json({ error: "Invalid project or stage association." });
+        if (!project) {
+            logger.warn(`Project not found: project_id=${project_id}`);
+            return res.status(400).json({ error: "Project not found." });
         }
 
-        // Create the task with only the task owner
+        const stage = await Stage.findOne({ where: { stage_id, project_id } });
+        if (!stage) {
+            logger.warn(`Stage not found or does not belong to project: stage_id=${stage_id}, project_id=${project_id}`);
+            return res.status(400).json({ error: "Stage not found for the given project." });
+        }
+
+        const finalDueDate = due_date && due_date.trim() !== '' ? due_date : null;
+
         const task = await Task.create({
             project_id,
             stage_id,
             task_name,
             description,
-            due_date,
+            due_date: finalDueDate,
             priority,
-            owner_id: userId,  // Set the creator as the owner
+            owner_id: userId,
         });
 
+        logger.info(`Task created successfully: ${task.task_id} by user_id: ${userId}`);
         res.status(201).json({ message: 'Task created successfully', task });
     } catch (error) {
-        console.error("Error in createTask:", error);
+        logger.error(`Error in createTask: ${error.message}`, error);
         res.status(500).json({ error: 'Error creating task' });
     }
 }
 
-// Retrieve a specific task
 // Retrieve a specific task
 async function getTaskById(req, res) {
     try {
         const { task_id } = req.params;
         const userId = req.user.id;
 
-        const task = await Task.findByPk(task_id, {
+        logger.info(`User ${userId} is fetching task with ID: ${task_id}`);
+
+        const parsedTaskId = parseInt(task_id, 10);
+        if (isNaN(parsedTaskId)) {
+            logger.warn(`Invalid task_id: ${task_id}`);
+            return res.status(400).json({ error: "Invalid task_id. Must be an integer." });
+        }
+
+        const task = await Task.findByPk(parsedTaskId, {
             include: [
                 {
                     model: User,
                     as: 'assigned_users',
-                    attributes: ['user_id'],  // Use 'user_id' to match the schema
-                    through: {
-                        attributes: ['can_view', 'can_edit'],  // Only include permission fields
-                    }
+                    attributes: ['user_id'],
+                    through: { attributes: ['can_view', 'can_edit'] }
                 }
             ]
         });
 
-        if (!task) return res.status(404).json({ error: 'Task not found' });
+        if (!task) {
+            logger.warn(`Task not found: ${parsedTaskId}`);
+            return res.status(404).json({ error: 'Task not found' });
+        }
 
-        const hasFullAccess = task.owner_id === userId || task.assigned_users.some(user => user.user_id === userId);
+        const hasFullAccess = (task.owner_id === userId) ||
+            (task.assigned_users && task.assigned_users.some(u => u.user_id === userId));
+
         const responseData = hasFullAccess ? task : { task_name: task.task_name, is_completed: task.is_completed };
 
+        logger.info(`Task retrieved successfully: ${parsedTaskId} for user ${userId}`);
         res.status(200).json(responseData);
     } catch (error) {
-        console.error("Error in getTaskById:", error);
+        logger.error(`Error in getTaskById: ${error.message}`, error);
         res.status(500).json({ error: 'Error retrieving task' });
     }
 }
 
 // GET all tasks for which you are assigned or owner
-
 async function getTasksByUser(req, res) {
     try {
-        const userId = req.user.id;  // Get the authenticated user ID from the token
+        const userId = req.user.id;
+        logger.info(`Fetching all tasks for user: ${userId}`);
 
         const tasks = await Task.findAll({
             where: {
                 [Op.or]: [
-                    { owner_id: userId },  // Fetch tasks where the user is the owner
-                    {
-                        '$assigned_users.user_id$': userId  // Fetch tasks where the user is a collaborator
-                    }
-                ]
-            },
-            include: [
-                {
-                    model: User,
-                    as: 'assigned_users',
-                    attributes: ['user_id'],  // Use 'user_id' instead of 'id'
-                    through: {
-                        attributes: ['can_view', 'can_edit'],  // Include only relevant fields from taskassignment
-                    }
-                }
-            ]
-        });
-
-        res.status(200).json(tasks);
-    } catch (error) {
-        console.error("Error in getTasksByUser:", error);
-        res.status(500).json({ error: 'Error fetching tasks' });
-    }
-}
-// Update task
-async function updateTask(req, res) {
-    try {
-        const { task_id } = req.params;
-        const userId = req.user.id;
-        const { task_name, description, due_date, priority, is_completed } = req.body;
-
-        // Retrieve the task based on ownership or edit permissions
-        const task = await Task.findOne({
-            where: {
-                task_id,
-                [Op.or]: [
-                    { owner_id: userId }, // Owner
-                    {
-                        '$assigned_users.taskassignment.can_edit$': true,
-                        '$assigned_users.user_id$': userId  // Collaborator with edit permissions
-                    }
+                    { owner_id: userId },
+                    { '$assigned_users.user_id$': userId }
                 ]
             },
             include: [
@@ -125,22 +105,98 @@ async function updateTask(req, res) {
                     as: 'assigned_users',
                     attributes: ['user_id'],
                     through: {
-                        attributes: ['can_edit']
+                        attributes: ['can_view', 'can_edit'],
                     }
                 }
             ]
         });
 
-        // Check if task is found
+        logger.info(`Tasks retrieved for user ${userId}: ${tasks.length}`);
+        res.status(200).json(tasks);
+    } catch (error) {
+        logger.error(`Error in getTasksByUser: ${error.message}`, error);
+        res.status(500).json({ error: 'Error fetching tasks' });
+    }
+}
+
+// Update task
+async function updateTask(req, res) {
+    try {
+        const { task_id } = req.params;
+        const userId = req.user.id;
+        const { project_id, stage_id, task_name, description, due_date, priority, is_completed } = req.body;
+
+        const parsedTaskId = parseInt(task_id, 10);
+        if (isNaN(parsedTaskId)) {
+            logger.warn(`Invalid task_id provided: ${task_id}`);
+            return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
+        }
+
+        logger.info(`User ${userId} is attempting to update task_id: ${parsedTaskId} with data: ${JSON.stringify(req.body)}`);
+
+        const task = await Task.findOne({
+            where: {
+                task_id: parsedTaskId,
+                [Op.or]: [
+                    { owner_id: userId },
+                    {
+                        '$assigned_users.TaskAssignment.can_edit$': true,
+                        '$assigned_users.user_id$': userId
+                    }
+                ]
+            },
+            include: [
+                {
+                    model: User,
+                    as: 'assigned_users',
+                    attributes: ['user_id'],
+                    through: { attributes: ['can_edit'] }
+                }
+            ]
+        });
+
         if (!task) {
+            logger.warn(`Task not found or insufficient permissions for task_id: ${parsedTaskId}`);
             return res.status(404).json({ error: 'Task not found or insufficient permissions' });
         }
 
-        // Update the task if found and permission is valid
-        await task.update({ task_name, description, due_date, priority, is_completed });
+        if (project_id || stage_id) {
+            const parsedProjectId = project_id ? parseInt(project_id, 10) : task.project_id;
+            const parsedStageId = stage_id ? parseInt(stage_id, 10) : task.stage_id;
+
+            if (isNaN(parsedProjectId) || isNaN(parsedStageId)) {
+                logger.warn(`Invalid project_id: ${project_id} or stage_id: ${stage_id}`);
+                return res.status(400).json({ error: "Invalid project_id or stage_id. Both must be integers." });
+            }
+
+            const project = await Project.findByPk(parsedProjectId);
+            if (!project) {
+                logger.warn(`Project not found: project_id=${parsedProjectId}`);
+                return res.status(400).json({ error: "Project not found." });
+            }
+
+            const stage = await Stage.findOne({ where: { stage_id: parsedStageId, project_id: parsedProjectId } });
+            if (!stage) {
+                logger.warn(`Stage not found or does not belong to project: stage_id=${parsedStageId}, project_id=${parsedProjectId}`);
+                return res.status(400).json({ error: "Stage not found for the given project." });
+            }
+
+            task.project_id = parsedProjectId;
+            task.stage_id = parsedStageId;
+        }
+
+        if (task_name !== undefined) task.task_name = task_name;
+        if (description !== undefined) task.description = description;
+        if (due_date !== undefined) task.due_date = due_date;
+        if (priority !== undefined) task.priority = priority;
+        if (is_completed !== undefined) task.is_completed = is_completed;
+
+        await task.save();
+
+        logger.info(`Task updated successfully: ${parsedTaskId} by user_id: ${userId}`);
         res.status(200).json({ message: 'Task updated successfully', task });
     } catch (error) {
-        console.error("Error in updateTask:", error);
+        logger.error(`Error in updateTask: ${error.message}`, error);
         res.status(500).json({ error: 'Error updating task' });
     }
 }
@@ -151,15 +207,22 @@ async function deleteTask(req, res) {
         const { task_id } = req.params;
         const userId = req.user.id;
 
-        // Find the task based on ownership or edit permissions
+        const parsedTaskId = parseInt(task_id, 10);
+        if (isNaN(parsedTaskId)) {
+            logger.warn(`Invalid task_id provided: ${task_id}`);
+            return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
+        }
+
+        logger.info(`User ${userId} is attempting to delete task_id: ${parsedTaskId}`);
+
         const task = await Task.findOne({
             where: {
-                task_id,
+                task_id: parsedTaskId,
                 [Op.or]: [
-                    { owner_id: userId }, // Owner
+                    { owner_id: userId },
                     {
-                        '$assigned_users.taskassignment.can_edit$': true,
-                        '$assigned_users.user_id$': userId  // Collaborator with edit permissions
+                        '$assigned_users.TaskAssignment.can_edit$': true,
+                        '$assigned_users.user_id$': userId
                     }
                 ]
             },
@@ -168,26 +231,23 @@ async function deleteTask(req, res) {
                     model: User,
                     as: 'assigned_users',
                     attributes: ['user_id'],
-                    through: {
-                        attributes: ['can_edit']
-                    }
+                    through: { attributes: ['can_edit'] }
                 }
             ]
         });
 
-        // Check if task is found
         if (!task) {
+            logger.warn(`Task not found or insufficient permissions for task_id: ${parsedTaskId}`);
             return res.status(404).json({ error: 'Task not found or insufficient permissions' });
         }
 
-        // Delete the task if permissions are valid
         await task.destroy();
+        logger.info(`Task deleted successfully: ${parsedTaskId} by user_id: ${userId}`);
         res.status(200).json({ message: 'Task deleted successfully' });
     } catch (error) {
-        console.error("Error in deleteTask:", error);
+        logger.error(`Error in deleteTask: ${error.message}`, error);
         res.status(500).json({ error: 'Error deleting task' });
     }
 }
 
-// Export all task controller functions, including getTasksByUser
 module.exports = { createTask, getTaskById, updateTask, deleteTask, getTasksByUser };

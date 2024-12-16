@@ -1,7 +1,6 @@
 // models/taskassignment.js
-
 module.exports = (sequelize, DataTypes) => {
-    const taskassignment = sequelize.define('taskassignment', {  // Model name matches file name (singular, lowercase)
+    const TaskAssignment = sequelize.define('TaskAssignment', {
         assignment_id: {
             type: DataTypes.INTEGER,
             primaryKey: true,
@@ -10,31 +9,31 @@ module.exports = (sequelize, DataTypes) => {
         task_id: {
             type: DataTypes.INTEGER,
             allowNull: false,
-            references: {
-                model: 'tasks',
-                key: 'task_id',
-            },
         },
-        collaborator_id: {
+        user_id: {
             type: DataTypes.INTEGER,
             allowNull: false,
-            references: {
-                model: 'users',
-                key: 'user_id',
-            },
+        },
+        can_edit: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false,
         },
         can_view: {
             type: DataTypes.BOOLEAN,
             defaultValue: true,
         },
-        can_edit: {
-            type: DataTypes.BOOLEAN,
-            defaultValue: false,
-        }
     }, {
-        tableName: 'taskassignments', // Matches database table name (plural)
+        tableName: 'taskassignments',
         timestamps: false,
+        modelName: 'TaskAssignment', // Ensure modelName is set so references to models.TaskAssignment work correctly
     });
 
-    return taskassignment;
+    // Define associations
+    TaskAssignment.associate = (models) => {
+        TaskAssignment.belongsTo(models.Task, { foreignKey: 'task_id', as: 'task' });
+        TaskAssignment.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+    };
+
+    console.log("TaskAssignment model initialized.");
+    return TaskAssignment;
 };

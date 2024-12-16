@@ -1,0 +1,51 @@
+{"level":"info","message":"Login attempt with email: test@test.com","service":"project-management-service","timestamp":"2024-12-08 13:34:59"}
+{"level":"warn","message":"User with email test@test.com not found","service":"project-management-service","timestamp":"2024-12-08 13:34:59"}
+{"level":"info","message":"Login attempt with email: test@test.test","service":"project-management-service","timestamp":"2024-12-08 13:35:04"}
+{"level":"info","message":"Login successful for user: test@test.test","service":"project-management-service","timestamp":"2024-12-08 13:35:04"}
+{"level":"info","message":"Fetching projects for user: 23","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Owned projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Collaborator projects retrieved: 0","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Unique projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Fetching projects for user: 23","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Owned projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Collaborator projects retrieved: 0","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Unique projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 13:35:06"}
+{"level":"info","message":"Project retrieved successfully: 11","service":"project-management-service","timestamp":"2024-12-08 13:35:10"}
+{"level":"info","message":"Collaborators retrieved for project ID 11: 1","service":"project-management-service","timestamp":"2024-12-08 13:35:10"}
+{"level":"info","message":"Project retrieved successfully: 11","service":"project-management-service","timestamp":"2024-12-08 13:35:10"}
+{"level":"info","message":"Collaborators retrieved for project ID 11: 1","service":"project-management-service","timestamp":"2024-12-08 13:35:10"}
+{"level":"info","message":"User 23 is creating a task in project 11, stage undefined with data: {\"project_id\":11,\"task_name\":\"test\",\"description\":\"test\",\"due_date\":\"2024-12-19\",\"priority\":\"High\"}","service":"project-management-service","timestamp":"2024-12-08 13:36:01"}
+{"level":"warn","message":"Invalid project_id: 11 or stage_id: undefined","service":"project-management-service","timestamp":"2024-12-08 13:36:01"}
+{"level":"info","message":"User 23 is creating a task in project 11, stage undefined with data: {\"project_id\":11,\"task_name\":\"test\",\"description\":\"test\",\"due_date\":\"2024-12-19\",\"priority\":\"High\"}","service":"project-management-service","timestamp":"2024-12-08 13:37:33"}
+{"level":"warn","message":"Invalid project_id: 11 or stage_id: undefined","service":"project-management-service","timestamp":"2024-12-08 13:37:33"}
+{"level":"info","message":"Loaded Routes: {\"user\":\"/api/users\",\"project\":\"/api/projects\",\"task\":\"/api/tasks\",\"company\":\"/api/companies\"}","service":"project-management-service","timestamp":"2024-12-08 13:47:22"}
+{"level":"info","message":"Server running on port 5001","service":"project-management-service","timestamp":"2024-12-08 13:47:22"}
+{"level":"info","message":"Database synced successfully","service":"project-management-service","timestamp":"2024-12-08 13:47:22"}
+{"level":"info","message":"Fetching user details for user ID: 23","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"Project retrieved successfully: 11","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"Collaborators retrieved for project ID 11: 1","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"User details retrieved successfully for user ID: 23","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"Project retrieved successfully: 11","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"Fetching user details for user ID: 23","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"Collaborators retrieved for project ID 11: 1","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"User details retrieved successfully for user ID: 23","service":"project-management-service","timestamp":"2024-12-08 13:48:10"}
+{"level":"info","message":"Loaded Routes: {\"user\":\"/api/users\",\"project\":\"/api/projects\",\"task\":\"/api/tasks\",\"company\":\"/api/companies\"}","service":"project-management-service","timestamp":"2024-12-08 21:19:58"}
+{"level":"info","message":"Server running on port 5001","service":"project-management-service","timestamp":"2024-12-08 21:19:58"}
+{"level":"info","message":"Database synced successfully","service":"project-management-service","timestamp":"2024-12-08 21:19:58"}
+{"level":"info","message":"Login attempt with email: test@test.test","service":"project-management-service","timestamp":"2024-12-08 21:20:34"}
+{"level":"info","message":"Login successful for user: test@test.test","service":"project-management-service","timestamp":"2024-12-08 21:20:34"}
+{"level":"info","message":"Fetching projects for user: 23","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Owned projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Collaborator projects retrieved: 0","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Unique projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Fetching projects for user: 23","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Owned projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Collaborator projects retrieved: 0","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Unique projects retrieved: 1","service":"project-management-service","timestamp":"2024-12-08 21:20:35"}
+{"level":"info","message":"Project retrieved successfully: 11","service":"project-management-service","timestamp":"2024-12-08 21:20:40"}
+{"level":"info","message":"Collaborators retrieved for project ID 11: 1","service":"project-management-service","timestamp":"2024-12-08 21:20:40"}
+{"level":"info","message":"Project retrieved successfully: 11","service":"project-management-service","timestamp":"2024-12-08 21:20:40"}
+{"level":"info","message":"Collaborators retrieved for project ID 11: 1","service":"project-management-service","timestamp":"2024-12-08 21:20:40"}
+{"level":"info","message":"Loaded Routes: {\"user\":\"/api/users\",\"project\":\"/api/projects\",\"task\":\"/api/tasks\",\"company\":\"/api/companies\"}","service":"project-management-service","timestamp":"2024-12-08 21:30:56"}
+{"level":"info","message":"Server running on port 5001","service":"project-management-service","timestamp":"2024-12-08 21:30:56"}
+{"level":"info","message":"Database synced successfully","service":"project-management-service","timestamp":"2024-12-08 21:30:57"}

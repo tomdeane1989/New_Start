@@ -1,0 +1,4138 @@
+
+
+--- /Users/thomasdeane/Project/New_Start/Backend/controllers/projectController.js ---
+
+// Backend/controllers/projectController.js
+const db = require('../models');
+const { Project, Stage, User, ProjectCollaborator, Task } = db;
+const logger = require('../logger'); // Import Winston logger
+
+// Define default stages
+const defaultStages = [
+    { stage_name: 'Viewings', description: 'Initial viewings of the property', stage_order: 1 },
+    { stage_name: 'Offer Stage', description: 'Stage of making an offer on the property', stage_order: 2 },
+    { stage_name: 'Offer Accepted', description: 'Offer accepted by the seller', stage_order: 3 },
+    { stage_name: 'Legal, Surveys, & Compliance', description: 'Legal checks, surveys, and compliance checks', stage_order: 4 },
+    { stage_name: 'Mortgage Application', description: 'Processing of buyer’s mortgage application', stage_order: 5 },
+    { stage_name: 'Contract Exchange', description: 'Exchange of contracts between buyer and seller', stage_order: 6 },
+    { stage_name: 'Key Exchange', description: 'Final exchange of keys and property ownership', stage_order: 7 },
+    { stage_name: 'Misc', description: 'For any tasks outside of the standard stages', stage_order: 8, is_custom: true }
+];
+
+const defaultTasks = {
+    'Viewings': [
+        'Set criteria for your housing search',
+        'Determine your financial position - salary/savings/existing equity',
+        'Find appropriate properties through Rightmove etc.',
+        'Contact Estate Agents for further information',
+        'Book viewings',
+        'Invite your Mortgage Advisor (if you have one) to collaborate on A.I.P',
+    ],
+    'Offer Stage': [
+        'Agreement in Principal with mortgage provider',
+        'Offer',
+        'Seller\'s response to offer',
+        'Counter offer 1',
+        'Seller\'s response to counter offer 1',
+        'Counter offer 2',
+        'Seller\'s response to counter offer 2',
+    ],
+    'Offer Accepted': [
+        'Invite solicitor to collaborate on Conveyancing',
+        'Provide solicitor contact information to seller\'s estate agent for Memorandum of Sale',
+    ],
+    'Legal, Surveys, & Compliance': [
+        'Review and agree on costs with solicitor',
+        'Decide on your need for extensive or basic surveys',
+        'Confirm identity',
+        'Gifted deposit administration',
+    ],
+    'Mortgage Application': [
+        'Provide bank statements',
+        'Provide payslips',
+        'Provide proof of address',
+        'Provide proof of identity',
+        'Review affordability of mortgage payments',
+        'Confirm mortgage offer',
+    ],
+    'Contract Exchange': [
+        'Sign Mortgage offer',
+        'Sign Deed of Covenant',
+        'Agree on Chattels',
+        'Agree completion date',
+    ],
+    'Misc': [], // No predefined tasks for Misc stage
+};
+
+// Middleware to verify project ownership
+async function isProjectOwner(req, res, next) {
+    try {
+        const project_id = req.params.project_id || req.params.id;
+        const userId = req.user?.id;
+
+        logger.info(`Verifying ownership for project: ${project_id} by user: ${userId}`);
+
+        const project = await Project.findOne({
+            where: { project_id, owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role']
+                }
+            ]
+        });
+
+        if (!project) {
+            logger.warn(`User ${userId} does not have permission to access project ${project_id}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        logger.info(`User ${userId} verified as owner of project ${project_id}`);
+        next();
+    } catch (error) {
+        logger.error(`Error verifying project ownership: ${error.message}`, error);
+        res.status(500).json({ error: 'Error verifying project ownership' });
+    }
+}
+
+// Create Projects
+async function createProject(req, res) {
+    try {
+        const { project_name, description, start_date, end_date, status, user_role } = req.body;
+        const owner_id = req.user?.id;
+
+        if (!owner_id) {
+            logger.warn("Owner ID is missing or invalid.");
+            return res.status(400).json({ error: "Owner ID is missing or invalid." });
+        }
+
+        if (user_role === undefined || (user_role !== 0 && user_role !== 1)) {
+            // Ensure user_role is either 0 (Buyer) or 1 (Seller)
+            logger.warn(`Invalid user_role: ${user_role}`);
+            return res.status(400).json({ error: "Invalid user_role. Must be 0 (Buyer) or 1 (Seller)." });
+        }
+
+        // Create the project
+        const project = await Project.create({
+            project_name,
+            description,
+            start_date,
+            end_date,
+            status: status || 'active',
+            owner_id,
+        });
+
+        logger.info(`Project created successfully: ${project.project_id} by user_id: ${owner_id}`);
+
+        // Assign the owner as a collaborator
+        await ProjectCollaborator.create({
+            project_id: project.project_id,
+            user_id: owner_id,
+            role: user_role, // 0 for Buyer, 1 for Seller
+        });
+
+        logger.info(`Owner assigned as collaborator with role: ${user_role}`);
+
+        // Create default stages
+        const stagesToAdd = defaultStages.map(stage => ({
+            ...stage,
+            project_id: project.project_id,
+            created_at: new Date(),
+            updated_at: new Date(),
+        }));
+
+        const stages = await Stage.bulkCreate(stagesToAdd, { returning: true });
+        logger.info(`Default stages created for project_id: ${project.project_id}`);
+
+        // Create default tasks for each stage and assign owner_id to the project creator
+        const tasks = stages.flatMap(stage => {
+            const stageTasks = defaultTasks[stage.stage_name]; // Fetch tasks for this stage
+            if (!stageTasks) {
+                logger.warn(`No tasks defined for stage: ${stage.stage_name}`);
+                return []; // Skip stages without tasks
+            }
+
+            return stageTasks.map(taskName => ({
+                task_name: taskName,
+                stage_id: stage.stage_id,
+                project_id: project.project_id,
+                owner_id: owner_id, // Assign project creator as the owner of these tasks
+                created_at: new Date(),
+                updated_at: new Date(),
+            }));
+        });
+
+        if (tasks.length > 0) {
+            await Task.bulkCreate(tasks); // Insert tasks in bulk
+            logger.info(`Default tasks created for project_id: ${project.project_id}`);
+        }
+
+        res.status(201).json({
+            message: 'Project, default stages, and tasks created successfully',
+            project,
+        });
+    } catch (error) {
+        logger.error(`Error in createProject: ${error.message}`, error);
+        res.status(500).json({ error: 'Error creating project' });
+    }
+}
+
+// Get projects by authenticated user
+async function getProjectsByUserId(req, res) {
+    logger.info(`Fetching projects for user: ${req.user.id}`);
+
+    try {
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            logger.error(`Invalid user ID: ${req.user.id}`);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+
+        // Fetch projects owned by the user
+        const ownedProjects = await Project.findAll({
+            where: { owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['email', 'first_name', 'last_name'],
+                        },
+                    ],
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_name', 'stage_order', 'is_custom'],
+                    include: [
+                        {
+                            model: Task,
+                            as: 'tasks', // Include tasks within stages
+                            attributes: ['task_name', 'created_at', 'updated_at'],
+                        },
+                    ],
+                },
+            ],
+        });
+
+        logger.info(`Owned projects retrieved: ${ownedProjects.length}`);
+
+        // Fetch projects where the user is a collaborator
+        const collaboratorProjects = await Project.findAll({
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    where: { user_id: userId },
+                    required: true,
+                    attributes: ['project_id'],
+                },
+            ],
+        });
+
+        logger.info(`Collaborator projects retrieved: ${collaboratorProjects.length}`);
+
+        // Combine and deduplicate projects
+        const allProjects = [...ownedProjects, ...collaboratorProjects];
+        const uniqueProjects = Array.from(
+            new Map(allProjects.map((project) => [project.project_id, project])).values()
+        );
+
+        logger.info(`Unique projects retrieved: ${uniqueProjects.length}`);
+        res.status(200).json(uniqueProjects);
+    } catch (error) {
+        logger.error(`Error in getProjectsByUserId: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch user projects', details: error.message });
+    }
+}
+
+// Get all projects
+async function getAllProjects(req, res) {
+    try {
+        logger.info('Fetching all projects...');
+        const projects = await Project.findAll({
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role'],
+                    required: false,
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_name', 'stage_order', 'is_custom'],
+                    required: false,
+                },
+            ],
+        });
+        logger.info(`Found ${projects.length} projects.`);
+        res.status(200).json(projects);
+    } catch (error) {
+        logger.error(`Error in getAllProjects: ${error.message}`, error);
+        res.status(500).json({ error: 'Error retrieving all projects', details: error.message });
+    }
+}
+
+async function getProjectById(req, res) {
+    try {
+        const projectId = parseInt(req.params.id, 10); // Validate project ID
+        if (isNaN(projectId)) {
+            logger.warn(`Invalid project ID: ${req.params.id}`);
+            return res.status(400).json({ error: "Invalid project ID" });
+        }
+
+        const userId = parseInt(req.user.id, 10); // Validate user ID
+        if (isNaN(userId)) {
+            logger.warn(`Invalid user ID: ${req.user.id}`);
+            return res.status(400).json({ error: "Invalid user ID" });
+        }
+
+        // Fetch project by ID, ensuring the authenticated user is either the owner or a collaborator
+        const project = await Project.findOne({
+            where: { project_id: projectId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role'],
+                    where: {
+                        user_id: userId,
+                    },
+                    required: false, // Include collaborators only if they exist
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_name', 'stage_order', 'is_custom'],
+                    include: [
+                        {
+                            model: db.Task, // Ensure the Task model is included
+                            as: 'tasks',
+                            attributes: ['task_name', 'is_completed'],
+                        },
+                    ],
+                },
+            ],
+        });
+
+        if (!project) {
+            logger.warn(`Project not found or unauthorized access for project ID: ${projectId}`);
+            return res.status(404).json({ error: "Project not found or unauthorized" });
+        }
+
+        logger.info(`Project retrieved successfully: ${projectId}`);
+        res.status(200).json(project);
+    } catch (error) {
+        logger.error(`Error in getProjectById: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving project" });
+    }
+}
+
+// Update a project by its ID
+async function updateProject(req, res) {
+    try {
+        const { id } = req.params; // Get project ID from params
+        const { project_name, description, start_date, end_date, status } = req.body; // Get project details from the body
+        const ownerId = req.user?.id; // Get the authenticated user's ID
+
+        if (!ownerId) {
+            logger.warn("Unauthorized: Owner ID is required");
+            return res.status(401).json({ error: "Unauthorized: Owner ID is required" });
+        }
+
+        logger.info(`Updating project with ID: ${id} for user ID: ${ownerId}`);
+
+        // Ensure the authenticated user is the owner of the project
+        const project = await Project.findOne({
+            where: { project_id: id, owner_id: ownerId },
+        });
+
+        if (!project) {
+            logger.warn("Project not found or unauthorized access.");
+            return res.status(404).json({ error: "Project not found or unauthorized access" });
+        }
+
+        // Update the project details
+        const updatedProject = await project.update({
+            project_name,
+            description,
+            start_date,
+            end_date,
+            status,
+        });
+
+        logger.info(`Project updated successfully: ${updatedProject.project_id}`);
+        res.status(200).json({ message: "Project updated successfully", project: updatedProject });
+    } catch (error) {
+        logger.error(`Error in updateProject: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating project", details: error.message });
+    }
+}
+
+async function addCollaborator(req, res) {
+    try {
+        logger.info(`Request Params: ${JSON.stringify(req.params)}`);
+        logger.info(`Request Body: ${JSON.stringify(req.body)}`);
+
+        const { id: project_id } = req.params;
+        let { email, role } = req.body;
+
+        if (!project_id) {
+            logger.error("Invalid or missing project_id in request parameters.");
+            return res.status(400).json({ error: "Invalid or missing project_id in request parameters." });
+        }
+
+        const collaborator = await User.findOne({ where: { email } });
+
+        if (!collaborator) {
+            logger.error(`Collaborator not found for email: ${email}`);
+            return res.status(404).json({ error: 'Collaborator not found' });
+        }
+
+        const existingCollaboration = await ProjectCollaborator.findOne({
+            where: { project_id, user_id: collaborator.user_id },
+        });
+
+        if (existingCollaboration) {
+            logger.warn('User is already a collaborator on this project.');
+            return res.status(400).json({ error: 'User is already a collaborator on this project' });
+        }
+
+        const parsedRole = parseInt(role, 10);
+        if (isNaN(parsedRole)) {
+            logger.error(`Invalid integer role supplied: ${role}`);
+            return res.status(400).json({ error: 'Invalid role supplied. Must be an integer.' });
+        }
+
+        const newCollaboration = await ProjectCollaborator.create({
+            project_id,
+            user_id: collaborator.user_id,
+            role: parsedRole,
+        });
+
+        logger.info(`Collaborator added successfully: ${JSON.stringify(newCollaboration)}`);
+        res.status(201).json({
+            message: 'Collaborator added successfully',
+            collaboration: newCollaboration,
+        });
+    } catch (error) {
+        logger.error(`Error in addCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: 'Error adding collaborator', details: error.message });
+    }
+}
+
+// Get all collaborators for a project
+async function getCollaborators(req, res) {
+    try {
+        const { id } = req.params; // Ensure we use `id`, not `project_id`.
+        const collaborators = await ProjectCollaborator.findAll({
+            where: { project_id: id },
+            include: [{ model: User, as: 'user', attributes: ['email', 'first_name', 'last_name'] }]
+        });
+        logger.info(`Collaborators retrieved for project ID ${id}: ${collaborators.length}`);
+        res.status(200).json(collaborators);
+    } catch (error) {
+        logger.error(`Error in getCollaborators: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving collaborators" });
+    }
+}
+
+// Get all stages for a project
+async function getStages(req, res) {
+    try {
+        const { project_id } = req.params;
+        const stages = await Stage.findAll({ where: { project_id } });
+        logger.info(`Stages retrieved for project_id ${project_id}: ${stages.length}`);
+        res.status(200).json(stages);
+    } catch (error) {
+        logger.error(`Error in getStages: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving stages" });
+    }
+}
+
+// Get a specific stage by ID
+async function getStageById(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+        logger.info(`Fetching stage with project_id: ${project_id} and stage_id: ${stage_id}`);
+
+        // Ensure `project_id` and `stage_id` are integers for query matching
+        const stage = await Stage.findOne({
+            where: {
+                project_id: parseInt(project_id, 10),
+                stage_id: parseInt(stage_id, 10)
+            }
+        });
+
+        if (!stage) {
+            logger.warn(`Stage not found for project_id: ${project_id} and stage_id: ${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage found: ${stage.stage_id} in project ${project_id}`);
+        res.status(200).json(stage);
+    } catch (error) {
+        logger.error(`Error in getStageById: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving stage" });
+    }
+}
+
+// Create a custom stage
+async function createStage(req, res) {
+    try {
+        const { project_id } = req.params;
+        const { stage_name, description, stage_order } = req.body;
+
+        const newStage = await Stage.create({
+            project_id,
+            stage_name,
+            description,
+            stage_order,
+            is_custom: true
+        });
+
+        logger.info(`Custom stage created successfully: ${newStage.stage_id} in project ${project_id}`);
+        res.status(201).json({ message: 'Custom stage created successfully', stage: newStage });
+    } catch (error) {
+        logger.error(`Error in createStage: ${error.message}`, error);
+        res.status(500).json({ error: "Error creating stage" });
+    }
+}
+
+// Update an existing stage
+async function updateStage(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+        const { stage_name, description, stage_order } = req.body;
+
+        logger.info(`Updating stage with ID: ${stage_id} in project: ${project_id}`);
+
+        const [updated] = await Stage.update(
+            { stage_name, description, stage_order },
+            { where: { project_id, stage_id, is_custom: true } }
+        );
+
+        if (!updated) {
+            logger.warn(`Stage not found or unauthorized for update: project_id=${project_id}, stage_id=${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage updated successfully: ${stage_id} in project ${project_id}`);
+        res.json({ message: 'Stage updated successfully' });
+    } catch (error) {
+        logger.error(`Error in updateStage: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating stage" });
+    }
+}
+
+// Delete an existing custom stage
+async function deleteStage(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+
+        logger.info(`Deleting stage with ID: ${stage_id} from project: ${project_id}`);
+
+        const deleted = await Stage.destroy({
+            where: { project_id, stage_id, is_custom: true }
+        });
+
+        if (!deleted) {
+            logger.warn(`Stage not found or unauthorized for deletion: project_id=${project_id}, stage_id=${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage deleted successfully: ${stage_id} from project ${project_id}`);
+        res.json({ message: 'Stage deleted successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteStage: ${error.message}`, error);
+        res.status(500).json({ error: "Error deleting stage" });
+    }
+}
+
+async function updateCollaborator(req, res) {
+    try {
+        const { id: project_id, collaborator_id } = req.params;
+        const { role } = req.body;
+
+        logger.info(`Updating collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}, role=${role}`);
+
+        if (!project_id || !collaborator_id) {
+            logger.error("Missing project_id or collaborator_id.");
+            return res.status(400).json({ error: "Missing project_id or collaborator_id." });
+        }
+
+        const parsedRole = parseInt(role, 10);
+        if (isNaN(parsedRole)) {
+            logger.error(`Invalid or missing integer role: ${role}`);
+            return res.status(400).json({ error: "Invalid or missing integer role in request body." });
+        }
+
+        logger.info(`Updating collaborator with: project_id=${project_id}, collaborator_id=${collaborator_id}, parsedRole=${parsedRole}`);
+
+        const [updated] = await ProjectCollaborator.update(
+            { role: parsedRole },
+            { where: { project_id, collaborator_id } }
+        );
+
+        if (!updated) {
+            logger.warn("Collaborator not found or unauthorized.");
+            return res.status(404).json({ error: "Collaborator not found or unauthorized" });
+        }
+
+        logger.info("Collaborator role updated successfully.");
+        res.json({ message: "Collaborator role updated successfully" });
+    } catch (error) {
+        logger.error(`Error in updateCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating collaborator" });
+    }
+}
+
+// Delete a collaborator from a project
+async function deleteCollaborator(req, res) {
+    try {
+        const { project_id, collaborator_id } = req.params;
+
+        logger.info(`Deleting collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}`);
+
+        const deleted = await ProjectCollaborator.destroy({
+            where: { project_id, collaborator_id }
+        });
+        if (!deleted) {
+            logger.warn(`Collaborator not found or unauthorized: project_id=${project_id}, collaborator_id=${collaborator_id}`);
+            return res.status(404).json({ error: 'Collaborator not found or unauthorized' });
+        }
+        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id} from project_id=${project_id}`);
+        res.json({ message: 'Collaborator removed successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: 'Error removing collaborator' });
+    }
+}
+
+// Delete project by project ID
+async function deleteProject(req, res) {
+    try {
+        const { id } = req.params;
+        logger.info(`Deleting project with ID: ${id} by user ID: ${req.user?.id}`);
+
+        const deleted = await Project.destroy({ where: { project_id: id, owner_id: req.user?.id } });
+        if (!deleted) {
+            logger.warn(`Project not found or unauthorized for deletion: project_id=${id}`);
+            return res.status(404).json({ error: 'Project not found or unauthorized' });
+        }
+        logger.info(`Project deleted successfully: project_id=${id}`);
+        res.json({ message: 'Project deleted successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteProject: ${error.message}`, error);
+        res.status(500).json({ error: 'Error deleting project' });
+    }
+}
+
+// testing start
+const testProjectCollaboratorsAssociation = async (req, res) => {
+    try {
+        const collaborators = await ProjectCollaborator.findAll({
+            include: [
+                {
+                    model: Project,
+                    as: 'project'
+                }
+            ]
+        });
+
+        logger.info(`Testing ProjectCollaborators association: Retrieved ${collaborators.length} collaborators.`);
+        res.status(200).json(collaborators);
+    } catch (error) {
+        logger.error(`Error in testProjectCollaboratorsAssociation: ${error.message}`, error);
+        res.status(500).json({ error: "Error testing ProjectCollaborators association" });
+    }
+};
+// testing stop
+
+module.exports = {
+    createProject,
+    getAllProjects,
+    getProjectsByUserId,
+    getCollaborators,
+    addCollaborator,
+    getStages,          // Exported
+    getStageById,       // Exported
+    createStage,        // Exported
+    updateStage,        // Exported
+    deleteStage,        // Exported
+    getProjectById,
+    updateProject,
+    updateCollaborator,
+    deleteCollaborator,
+    deleteProject,
+    isProjectOwner,
+    testProjectCollaboratorsAssociation,
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/controllers/companyController.js ---
+
+// Backend/controllers/companyController.js
+const { Company, User } = require('../models');
+const logger = require('../logger'); // Import Winston logger
+
+// Create a new company
+const createCompany = async (req, res) => {
+    try {
+        const { company_name, company_email } = req.body;
+
+        // Retrieve the logged-in user's ID from the `req.user` object
+        const userId = req.user?.id;
+
+        if (!company_name || !company_email) {
+            logger.warn('Missing required fields: company_name or company_email');
+            return res.status(400).json({ error: 'Missing required fields: company_name or company_email' });
+        }
+
+        logger.info(`Creating or validating Company: ${company_name}`);
+
+        // Check if the company already exists
+        const existingCompany = await Company.findOne({ where: { company_name } });
+
+        if (existingCompany) {
+            logger.warn(`Company "${company_name}" already exists`);
+            return res.status(409).json({ error: 'Company already exists' });
+        }
+
+        // Create a new company
+        const newCompany = await Company.create({ company_name, company_email });
+        logger.info(`Company created successfully: ${newCompany.company_id} (${company_name})`);
+
+        // Associate the logged-in user with the company
+        if (userId) {
+            const user = await User.findByPk(userId);
+            if (user) {
+                await user.update({ company_id: newCompany.company_id });
+                logger.info(`User ID ${userId} associated with company ID ${newCompany.company_id}`);
+            } else {
+                logger.warn(`User ID ${userId} not found.`);
+            }
+        } else {
+            logger.warn('No user ID provided in request.');
+        }
+
+        res.status(201).json({ message: 'Company created successfully', company: newCompany });
+    } catch (error) {
+        logger.error(`Error creating company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to create company', details: error.message });
+    }
+};
+
+// Get all companies
+const getAllCompanies = async (req, res) => {
+    try {
+        logger.info('Fetching all companies');
+
+        const companies = await Company.findAll({
+            attributes: ['company_id', 'company_name'], // Fetch minimal data for autocomplete
+            order: [['company_name', 'ASC']],
+        });
+
+        if (!companies.length) {
+            logger.warn('No companies found in the database.');
+            return res.status(404).json({ message: 'No companies found' });
+        }
+
+        logger.info(`Companies retrieved successfully: ${companies.length} companies found.`);
+        res.status(200).json(companies);
+    } catch (error) {
+        logger.error(`Error fetching companies: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch companies', details: error.message });
+    }
+};
+
+// Get a company by ID
+const getCompanyById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Fetching company with ID: ${id}`);
+
+        const company = await Company.findByPk(id);
+        if (!company) {
+            logger.warn(`Company with ID ${id} not found.`);
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        logger.info(`Company retrieved successfully: ${id}`);
+        res.status(200).json(company);
+    } catch (error) {
+        logger.error(`Error fetching company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch company' });
+    }
+};
+
+// Update a company by ID
+const updateCompany = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { company_name, company_email } = req.body;
+
+        logger.info(`Updating company with ID: ${id}`);
+
+        const company = await Company.findByPk(id);
+        if (!company) {
+            logger.warn(`Company with ID ${id} not found.`);
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        const updatedCompany = await company.update({ company_name, company_email });
+        logger.info(`Company updated successfully: ${id}`);
+        res.status(200).json(updatedCompany);
+    } catch (error) {
+        logger.error(`Error updating company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to update company' });
+    }
+};
+
+// Delete a company by ID
+const deleteCompany = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        logger.info(`Deleting company with ID: ${id}`);
+
+        const company = await Company.findByPk(id);
+        if (!company) {
+            logger.warn(`Company with ID ${id} not found.`);
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        await company.destroy();
+        logger.info(`Company with ID ${id} deleted successfully.`);
+        res.status(200).json({ message: 'Company deleted successfully' });
+    } catch (error) {
+        logger.error(`Error deleting company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to delete company' });
+    }
+};
+
+// Get users associated with a specific company by company ID
+const getUsersByCompanyId = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Fetching users for company ID: ${id}`);
+
+        // Fetch users associated with the company
+        const users = await User.findAll({
+            where: { company_id: id },
+            attributes: ['user_id', 'username', 'email', 'first_name', 'last_name'], // Select specific fields
+        });
+
+        if (!users.length) {
+            logger.warn(`No users found for company ID: ${id}`);
+            return res.status(404).json({ message: 'No users found for this company' });
+        }
+
+        logger.info(`Users retrieved successfully for company ID ${id}: ${users.length} users found.`);
+        res.status(200).json({ message: 'Users retrieved successfully', users });
+    } catch (error) {
+        logger.error(`Error fetching users for company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch users for company', details: error.message });
+    }
+};
+
+module.exports = {
+    createCompany,
+    getAllCompanies,
+    getCompanyById,
+    updateCompany,
+    deleteCompany,
+    getUsersByCompanyId, // Ensure export
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/controllers/userController.js ---
+
+// Backend/controllers/userController.js
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const db = require('../models');
+const { User, Company } = db;
+const logger = require('../logger'); // Import Winston logger
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key'; // Use environment variable
+
+// Controller function to create a user
+const createUser = async (req, res) => {
+    try {
+        logger.info(`Request received at /create with body: ${JSON.stringify(req.body)}`);
+
+        const { username, email, password, first_name, last_name, company_id, company_name } = req.body;
+
+        if (!username || !email || !password) {
+            logger.warn('Missing required fields: username, email, or password');
+            return res.status(400).json({ error: 'Missing required fields: username, email, or password' });
+        }
+
+        // Validate password strength
+        if (password.length < 6) {
+            logger.warn('Password too short');
+            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+        }
+
+        // Hash the password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        let companyId = company_id || null;
+
+        // Handle company validation or creation
+        if (!companyId && company_name) {
+            const existingCompany = await Company.findOne({ where: { company_name } });
+            if (existingCompany) {
+                companyId = existingCompany.company_id;
+                logger.info(`Using existing company: ${company_name} with ID: ${companyId}`);
+            } else {
+                const newCompany = await Company.create({ company_name });
+                companyId = newCompany.company_id;
+                logger.info(`Created new company: ${company_name} with ID: ${companyId}`);
+            }
+        }
+
+        // Create the user
+        const newUser = await User.create({
+            username,
+            email,
+            password_hash: hashedPassword,
+            first_name,
+            last_name,
+            company_id: companyId,
+        });
+
+        logger.info(`User created successfully: ${newUser.user_id} (${email})`);
+
+        // Generate a JWT token
+        const token = jwt.sign(
+            { id: newUser.user_id, email: newUser.email },
+            JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        logger.info(`JWT token generated for user: ${newUser.user_id}`);
+
+        res.status(201).json({
+            message: 'User created successfully',
+            user: newUser,
+            token, // Return the token
+        });
+    } catch (error) {
+        logger.error(`Error creating user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to create user', details: error.message });
+    }
+};
+
+// Controller function to retrieve all users
+const getAllUsers = async (req, res) => {
+    try {
+        logger.info('Request received at /getAll');
+
+        const users = await User.findAll({
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details
+            },
+        });
+
+        if (!users.length) {
+            logger.warn('No users found in the database.');
+            return res.status(404).json({ message: 'No users found' });
+        }
+
+        logger.info(`Users retrieved successfully: ${users.length} users found.`);
+        res.status(200).json({ message: 'Users retrieved successfully', users });
+    } catch (error) {
+        logger.error(`Error retrieving users: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to retrieve users', details: error.message });
+    }
+};
+
+// Get user by ID
+const getUserById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Fetching user with ID: ${id}`);
+
+        const user = await User.findByPk(id, {
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details
+            },
+        });
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found`);
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        logger.info(`User retrieved successfully: ${id}`);
+        res.status(200).json(user);
+    } catch (error) {
+        logger.error(`Error in getUserById: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to retrieve user', details: error.message });
+    }
+};
+
+// Get a user by token
+const getUserDetails = async (req, res) => {
+    try {
+        const userId = req.user.id; // Extract the user ID from the token (authMiddleware adds `req.user`)
+        logger.info(`Fetching user details for user ID: ${userId}`);
+
+        const user = await User.findByPk(userId, {
+            attributes: ['user_id', 'username', 'email', 'first_name', 'last_name', 'company_id'], // Select relevant fields
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details if needed
+            },
+        });
+
+        if (!user) {
+            logger.warn(`User with ID ${userId} not found`);
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        logger.info(`User details retrieved successfully for user ID: ${userId}`);
+        res.status(200).json(user);
+    } catch (error) {
+        logger.error(`Error in getUserDetails: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch user details' });
+    }
+};
+
+// Controller function to update a user by ID
+const updateUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Request received to update user with ID: ${id} and body: ${JSON.stringify(req.body)}`);
+
+        const { company_id, company_name, ...updateFields } = req.body;
+
+        const user = await User.findByPk(id);
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found for update.`);
+            return res.status(404).json({ message: `User with ID ${id} not found` });
+        }
+
+        // Handle company association updates
+        let companyId = company_id || user.company_id;
+
+        if (company_name) {
+            const existingCompany = await Company.findOne({ where: { company_name } });
+            if (existingCompany) {
+                companyId = existingCompany.company_id;
+                logger.info(`Using existing company: ${company_name} with ID: ${companyId}`);
+            } else {
+                const newCompany = await Company.create({ company_name });
+                companyId = newCompany.company_id;
+                logger.info(`Created new company: ${company_name} with ID: ${companyId}`);
+            }
+        }
+
+        const updatedUser = await user.update({ ...updateFields, company_id: companyId });
+
+        logger.info(`User updated successfully: ${id}`);
+        res.status(200).json({ message: 'User updated successfully', user: updatedUser });
+    } catch (error) {
+        logger.error(`Error updating user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to update user', details: error.message });
+    }
+};
+
+// Controller function to delete a user by ID
+const deleteUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Request received to delete user with ID: ${id}`);
+
+        const user = await User.findByPk(id);
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found for deletion.`);
+            return res.status(404).json({ message: `User with ID ${id} not found` });
+        }
+
+        await user.destroy();
+        logger.info(`User with ID ${id} deleted successfully.`);
+        res.status(200).json({ message: `User with ID ${id} deleted successfully` });
+    } catch (error) {
+        logger.error(`Error deleting user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to delete user', details: error.message });
+    }
+};
+
+module.exports = {
+    createUser,
+    getAllUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    getUserDetails,
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/controllers/taskController.js ---
+
+// Backend/controllers/taskController.js
+const { Op } = require('sequelize');
+const { Task, Project, Stage, TaskAssignment, User } = require('../models');  // Ensure correct capitalization and imports
+const logger = require('../logger'); // Import Winston logger
+
+// Create a new task
+async function createTask(req, res) {
+    try {
+        const { project_id, stage_id, task_name, description, due_date, priority } = req.body;
+        const userId = req.user.id;  // The creator's ID, which will be set as the task owner
+
+        logger.info(`User ${userId} is creating a task in project ${project_id}, stage ${stage_id} with data: ${JSON.stringify(req.body)}`);
+
+        // At this point, validation middleware has already checked for required fields and their formats
+
+        // Verify project exists
+        const project = await Project.findByPk(project_id);
+        if (!project) {
+            logger.warn(`Project not found: project_id=${project_id}`);
+            return res.status(400).json({ error: "Project not found." });
+        }
+
+        // Verify stage exists and belongs to the project
+        const stage = await Stage.findOne({ where: { stage_id, project_id } });
+        if (!stage) {
+            logger.warn(`Stage not found or does not belong to project: stage_id=${stage_id}, project_id=${project_id}`);
+            return res.status(400).json({ error: "Stage not found for the given project." });
+        }
+
+        // Create the task with the owner_id
+        const task = await Task.create({
+            project_id,
+            stage_id,
+            task_name,
+            description,
+            due_date,
+            priority,
+            owner_id: userId,
+        });
+
+        logger.info(`Task created successfully: ${task.task_id} by user_id: ${userId}`);
+        res.status(201).json({ message: 'Task created successfully', task });
+    } catch (error) {
+        logger.error(`Error in createTask: ${error.message}`, error);
+        res.status(500).json({ error: 'Error creating task' });
+    }
+}
+
+// Retrieve a specific task
+async function getTaskById(req, res) {
+    try {
+        const { task_id } = req.params;
+        const userId = req.user.id;
+
+        logger.info(`User ${userId} is fetching task with ID: ${task_id}`);
+
+        // Validate task_id
+        const parsedTaskId = parseInt(task_id, 10);
+        if (isNaN(parsedTaskId)) {
+            logger.warn(`Invalid task_id: ${task_id}`);
+            return res.status(400).json({ error: "Invalid task_id. Must be an integer." });
+        }
+
+        const task = await Task.findByPk(parsedTaskId, {
+            include: [
+                {
+                    model: User,
+                    as: 'assigned_users',
+                    attributes: ['user_id'],
+                    through: { attributes: ['can_view', 'can_edit'] }
+                }
+            ]
+        });
+
+        if (!task) {
+            logger.warn(`Task not found: ${parsedTaskId}`);
+            return res.status(404).json({ error: 'Task not found' });
+        }
+
+        // Check permissions
+        const hasFullAccess = (task.owner_id === userId) ||
+            (task.assigned_users && task.assigned_users.some(u => u.user_id === userId));
+
+        const responseData = hasFullAccess ? task : { task_name: task.task_name, is_completed: task.is_completed };
+
+        logger.info(`Task retrieved successfully: ${parsedTaskId} for user ${userId}`);
+        res.status(200).json(responseData);
+    } catch (error) {
+        logger.error(`Error in getTaskById: ${error.message}`, error);
+        res.status(500).json({ error: 'Error retrieving task' });
+    }
+}
+
+// GET all tasks for which you are assigned or owner
+async function getTasksByUser(req, res) {
+    try {
+        const userId = req.user.id;
+        logger.info(`Fetching all tasks for user: ${userId}`);
+
+        const tasks = await Task.findAll({
+            where: {
+                [Op.or]: [
+                    { owner_id: userId },  // Tasks owned by the user
+                    {
+                        '$assigned_users.user_id$': userId  // Tasks where the user is a collaborator
+                    }
+                ]
+            },
+            include: [
+                {
+                    model: User,
+                    as: 'assigned_users',
+                    attributes: ['user_id'],
+                    through: {
+                        attributes: ['can_view', 'can_edit'],
+                    }
+                }
+            ]
+        });
+
+        logger.info(`Tasks retrieved for user ${userId}: ${tasks.length}`);
+        res.status(200).json(tasks);
+    } catch (error) {
+        logger.error(`Error in getTasksByUser: ${error.message}`, error);
+        res.status(500).json({ error: 'Error fetching tasks' });
+    }
+}
+
+// Update task
+async function updateTask(req, res) {
+    try {
+        const { task_id } = req.params;
+        const userId = req.user.id;
+        const { project_id, stage_id, task_name, description, due_date, priority, is_completed } = req.body;
+
+        // Validate task_id
+        const parsedTaskId = parseInt(task_id, 10);
+        if (isNaN(parsedTaskId)) {
+            logger.warn(`Invalid task_id provided: ${task_id}`);
+            return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
+        }
+
+        logger.info(`User ${userId} is attempting to update task_id: ${parsedTaskId} with data: ${JSON.stringify(req.body)}`);
+
+        // Find the task and check permissions
+        const task = await Task.findOne({
+            where: {
+                task_id: parsedTaskId,
+                [Op.or]: [
+                    { owner_id: userId }, // Owner
+                    {
+                        '$assigned_users.TaskAssignment.can_edit$': true,
+                        '$assigned_users.user_id$': userId // Collaborator with edit permissions
+                    }
+                ]
+            },
+            include: [
+                {
+                    model: User,
+                    as: 'assigned_users',
+                    attributes: ['user_id'],
+                    through: {
+                        attributes: ['can_edit']
+                    }
+                }
+            ]
+        });
+
+        if (!task) {
+            logger.warn(`Task not found or insufficient permissions for task_id: ${parsedTaskId}`);
+            return res.status(404).json({ error: 'Task not found or insufficient permissions' });
+        }
+
+        // If project_id or stage_id is being updated, validate them
+        if (project_id || stage_id) {
+            const parsedProjectId = project_id ? parseInt(project_id, 10) : task.project_id;
+            const parsedStageId = stage_id ? parseInt(stage_id, 10) : task.stage_id;
+
+            if (isNaN(parsedProjectId) || isNaN(parsedStageId)) {
+                logger.warn(`Invalid project_id: ${project_id} or stage_id: ${stage_id}`);
+                return res.status(400).json({ error: "Invalid project_id or stage_id. Both must be integers." });
+            }
+
+            // Verify project exists
+            const project = await Project.findByPk(parsedProjectId);
+            if (!project) {
+                logger.warn(`Project not found: project_id=${parsedProjectId}`);
+                return res.status(400).json({ error: "Project not found." });
+            }
+
+            // Verify stage exists and belongs to the project
+            const stage = await Stage.findOne({ where: { stage_id: parsedStageId, project_id: parsedProjectId } });
+            if (!stage) {
+                logger.warn(`Stage not found or does not belong to project: stage_id=${parsedStageId}, project_id=${parsedProjectId}`);
+                return res.status(400).json({ error: "Stage not found for the given project." });
+            }
+
+            // Update project_id and stage_id
+            task.project_id = parsedProjectId;
+            task.stage_id = parsedStageId;
+        }
+
+        // Update other fields if provided
+        if (task_name !== undefined) task.task_name = task_name;
+        if (description !== undefined) task.description = description;
+        if (due_date !== undefined) task.due_date = due_date;
+        if (priority !== undefined) task.priority = priority;
+        if (is_completed !== undefined) task.is_completed = is_completed;
+
+        await task.save();
+
+        logger.info(`Task updated successfully: ${parsedTaskId} by user_id: ${userId}`);
+        res.status(200).json({ message: 'Task updated successfully', task });
+    } catch (error) {
+        logger.error(`Error in updateTask: ${error.message}`, error);
+        res.status(500).json({ error: 'Error updating task' });
+    }
+}
+
+// Delete task
+async function deleteTask(req, res) {
+    try {
+        const { task_id } = req.params;
+        const userId = req.user.id;
+
+        // Validate task_id
+        const parsedTaskId = parseInt(task_id, 10);
+        if (isNaN(parsedTaskId)) {
+            logger.warn(`Invalid task_id provided: ${task_id}`);
+            return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
+        }
+
+        logger.info(`User ${userId} is attempting to delete task_id: ${parsedTaskId}`);
+
+        const task = await Task.findOne({
+            where: {
+                task_id: parsedTaskId,
+                [Op.or]: [
+                    { owner_id: userId }, // Owner
+                    {
+                        '$assigned_users.TaskAssignment.can_edit$': true,
+                        '$assigned_users.user_id$': userId // Collaborator with edit permissions
+                    }
+                ]
+            },
+            include: [
+                {
+                    model: User,
+                    as: 'assigned_users',
+                    attributes: ['user_id'],
+                    through: {
+                        attributes: ['can_edit']
+                    }
+                }
+            ]
+        });
+
+        if (!task) {
+            logger.warn(`Task not found or insufficient permissions for task_id: ${parsedTaskId}`);
+            return res.status(404).json({ error: 'Task not found or insufficient permissions' });
+        }
+
+        await task.destroy();
+        logger.info(`Task deleted successfully: ${parsedTaskId} by user_id: ${userId}`);
+        res.status(200).json({ message: 'Task deleted successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteTask: ${error.message}`, error);
+        res.status(500).json({ error: 'Error deleting task' });
+    }
+}
+
+module.exports = { createTask, getTaskById, updateTask, deleteTask, getTasksByUser };
+
+--- /Users/thomasdeane/Project/New_Start/Backend/controllers/authController.js ---
+
+// Backend/controllers/authController.js
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const db = require('../models');
+const User = db.User;
+const logger = require('../logger'); // Import Winston logger
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
+const JWT_EXPIRATION = process.env.JWT_EXPIRATION || '1h';
+
+// Login user
+exports.login = async (req, res) => {
+    try {
+        logger.info(`Login attempt with email: ${req.body.email}`);
+
+        const { email, password } = req.body;
+        if (!email || !password) {
+            logger.warn('Missing email or password');
+            return res.status(400).json({ error: 'Missing email or password' });
+        }
+
+        const user = await User.findOne({ where: { email } });
+        if (!user) {
+            logger.warn(`User with email ${email} not found`);
+            return res.status(404).json({ error: 'Invalid email or password' });
+        }
+
+        const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+        if (!isPasswordValid) {
+            logger.warn(`Invalid password for user ${email}`);
+            return res.status(401).json({ error: 'Invalid email or password' });
+        }
+
+        const token = jwt.sign(
+            { id: user.user_id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: JWT_EXPIRATION }
+        );
+
+        logger.info(`Login successful for user: ${email}`);
+        res.status(200).json({ message: 'Login successful', token });
+    } catch (error) {
+        logger.error(`Error during login: ${error.message}`, error);
+        res.status(500).json({ error: 'Internal server error', details: error.message });
+    }
+};
+
+// Logout user (optional, usually handled client-side)
+exports.logout = (req, res) => {
+    logger.info('Logout request received');
+    res.status(200).json({ message: 'Logout successful' });
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/routes/projectRoutes.js ---
+
+// Backend/routes/projectRoutes.js
+const express = require('express');
+const router = express.Router();
+const {
+    createProject,
+    getProjectsByUserId,
+    getAllProjects,
+    getProjectById,
+    updateProject,
+    deleteProject,
+    addCollaborator,
+    getCollaborators,
+    updateCollaborator,
+    deleteCollaborator,
+    getStages,       // Imported for stage-specific operations
+    getStageById,    // Imported for fetching a specific stage
+    createStage,     // Imported for creating custom stages
+    updateStage,     // Imported for updating custom stages
+    deleteStage,     // Imported for deleting custom stages
+} = require('../controllers/projectController');
+const authMiddleware = require('../middleware/authMiddleware');
+
+// Apply authentication to all project routes
+router.use(authMiddleware);
+
+// Project CRUD operations
+router.post('/create', createProject);
+router.get('/user', getProjectsByUserId);
+router.get('/all', getAllProjects);
+
+// Collaborator operations
+router.post('/:id/collaborators', addCollaborator);
+router.get('/:id/collaborators', getCollaborators);
+router.put('/:id/collaborators/:collaborator_id', updateCollaborator);
+router.delete('/:id/collaborators/:collaborator_id', deleteCollaborator);
+
+// Stage operations
+router.get('/:project_id/stages/:stage_id', getStageById); // Fetch specific stage
+router.get('/:project_id/stages', getStages);               // Fetch all stages
+router.post('/:project_id/stages', createStage);            // Create a custom stage
+router.put('/:project_id/stages/:stage_id', updateStage);   // Update a custom stage
+router.delete('/:project_id/stages/:stage_id', deleteStage); // Delete a custom stage
+
+// Project detail routes (should come after more specific routes to prevent conflicts)
+router.get('/:id', getProjectById);
+router.put('/:id', updateProject);
+router.delete('/:id', deleteProject);
+
+module.exports = router;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/routes/authRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+const { login, logout } = require('../controllers/authController');
+
+console.log('Initializing Auth Routes');
+console.log('Login Route:', typeof login);
+console.log('Logout Route:', typeof logout);
+
+// Login route
+router.post('/login', login);
+
+// Logout route (optional, for demonstration)
+router.post('/logout', logout);
+
+module.exports = router;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/routes/userRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+const {
+    createUser,
+    getAllUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    getUserDetails,
+} = require('../controllers/userController');
+const authMiddleware = require('../middleware/authMiddleware');
+
+console.log('Initializing User Routes');
+
+// Allow unauthenticated access to registration
+router.post('/create', createUser);
+
+// Apply middleware to protect all other routes
+router.use(authMiddleware);
+
+router.get('/getAll', getAllUsers);
+router.get('/me', getUserDetails); // New route for current user details
+router.get('/:id', getUserById);
+router.put('/:id', updateUser);
+router.delete('/:id', deleteUser);
+
+module.exports = router;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/routes/companyRoutes.js ---
+
+const authMiddleware = require('../middleware/authMiddleware');
+const express = require('express');
+const router = express.Router();
+const { Op } = require('sequelize');
+const {
+    createCompany,
+    getAllCompanies,
+    getCompanyById,
+    updateCompany,
+    deleteCompany,
+    getUsersByCompanyId,
+} = require('../controllers/companyController');
+const Company = require('../models').Company;
+
+console.log('Initializing Company Routes');
+
+// Protect all routes
+router.use(authMiddleware);
+
+// Ownership validation middleware specific to company routes
+const validateCompanyOwnership = async (req, res, next) => {
+    try {
+        const companyId = req.params.id; // Extract company ID from route parameters
+        const userId = req.user.id; // Extract authenticated user ID from `authMiddleware`
+
+        // Fetch the company and validate ownership
+        const company = await Company.findByPk(companyId);
+
+        if (!company) {
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        if (company.owner_id !== userId) {
+            return res.status(403).json({ error: 'Access denied: You do not own this company' });
+        }
+
+        console.log(`Ownership validated for user ${userId} on company ${companyId}`);
+        next();
+    } catch (error) {
+        console.error('Error validating company ownership:', error);
+        res.status(500).json({ error: 'Internal server error during ownership validation' });
+    }
+};
+
+// Search route - specific paths must be defined before parameterized routes
+router.get('/search', async (req, res) => {
+    try {
+        const { name, email, created_after, created_before, updated_after, updated_before } = req.query;
+
+        const query = {};
+        if (name) query.company_name = { [Op.like]: `%${name}%` };
+        if (email) query.company_email = email;
+        if (created_after) query.created_at = { [Op.gte]: created_after };
+        if (created_before) query.created_at = { ...query.created_at, [Op.lte]: created_before };
+        if (updated_after) query.updated_at = { [Op.gte]: updated_after };
+        if (updated_before) query.updated_at = { ...query.updated_at, [Op.lte]: updated_before };
+
+        console.log('Executing company search with query:', query);
+
+        const companies = await Company.findAll({ where: query });
+
+        res.status(200).json(companies);
+    } catch (error) {
+        console.error('Error searching companies:', error);
+        res.status(500).json({ error: 'Failed to search companies' });
+    }
+});
+
+// Other routes
+router.post('/create', createCompany);
+router.get('/', getAllCompanies);
+router.get('/:id', getCompanyById); // Parameterized route should come last
+router.put('/:id', updateCompany);
+router.delete('/:id', deleteCompany);
+router.get('/:id/users', getUsersByCompanyId);
+router.get('/:id/owner', validateCompanyOwnership, async (req, res) => {
+    const company = await Company.findByPk(req.params.id, { include: 'owner' });
+    res.status(200).json(company.owner);
+});
+
+module.exports = router;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/routes/taskRoutes.js ---
+
+// Backend/routes/taskRoutes.js
+const express = require('express');
+const router = express.Router();
+const authMiddleware = require('../middleware/authMiddleware'); // Middleware for authentication
+const validateTask = require('../middleware/validateTask'); // Import validation middleware
+const { 
+    getTasksByUser, 
+    getTaskById, 
+    updateTask, 
+    deleteTask, 
+    createTask 
+} = require('../controllers/taskController');
+
+// Apply authentication to all task routes
+router.use(authMiddleware);
+
+// Define CRUD routes for tasks with validation where necessary
+router.post('/', validateTask, createTask);                 // Create a new task
+router.get('/user-tasks', getTasksByUser);                  // Get all tasks associated with a user
+router.get('/:task_id', getTaskById);                       // Get a specific task by ID
+router.put('/:task_id', validateTask, updateTask);          // Update a task by ID
+router.delete('/:task_id', deleteTask);                     // Delete a task by ID
+
+module.exports = router;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/config/database.js ---
+
+const { Sequelize } = require('sequelize');
+
+const sequelize = new Sequelize('project_db', 'thomasdeane', 'test', {
+  host: 'localhost',
+  dialect: 'postgres',
+  logging: false, // Set to true to see SQL queries in the console
+});
+
+async function testConnection() {
+  try {
+    await sequelize.authenticate();
+    console.log('Database connection established successfully.');
+  } catch (error) {
+    console.error('Unable to connect to the database:', error);
+  }
+}
+
+testConnection();
+
+module.exports = sequelize;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/config/config.json ---
+
+{
+  "development": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  },
+  "test": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db_test",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  },
+  "production": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db_prod",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  }
+}
+
+--- /Users/thomasdeane/Project/New_Start/Backend/config/routeConfig.js ---
+
+const routes = {
+    user: '/api/users',
+    project: '/api/projects',
+    task: '/api/tasks',
+    company: '/api/companies',
+};
+
+module.exports = routes;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/middleware/authMiddleware.js ---
+
+const jwt = require('jsonwebtoken');
+console.log(__dirname);
+// Use the secret key from the environment variables or fallback to a default (for development purposes only).
+const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
+
+/**
+ * Middleware to verify the JWT token and attach user info to the request object.
+ */
+module.exports = (req, res, next) => {
+    // Debug log to identify the routes where this middleware is applied
+    console.log(`AuthMiddleware applied to route: ${req.originalUrl}`);
+
+    try {
+        // Extract the token from the Authorization header. The format should be: "Bearer <token>"
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+            console.error('Authorization header is missing.');
+            return res.status(401).json({ error: 'Unauthorized: No token provided' });
+        }
+
+        const token = authHeader.split(' ')[1];
+        if (!token) {
+            console.error('Token is missing in the Authorization header.');
+            return res.status(401).json({ error: 'Unauthorized: Invalid Authorization header format' });
+        }
+
+        // Verify the token using the secret key.
+        const decoded = jwt.verify(token, JWT_SECRET);
+
+        // Attach decoded user information (e.g., user ID) to the `req` object for downstream middleware.
+        req.user = {
+            id: decoded.id,
+            email: decoded.email, // Optional, if present in the token payload
+            role: decoded.role,   // Optional, if roles are implemented in the payload
+        };
+
+        console.log(`Token verified successfully for user ID: ${decoded.id}, email: ${decoded.email}`);
+
+        // Call the next middleware or route handler.
+        next();
+    } catch (error) {
+        if (error.name === 'TokenExpiredError') {
+            console.error('Token has expired:', error);
+            return res.status(401).json({ error: 'Unauthorized: Token has expired' });
+        } else if (error.name === 'JsonWebTokenError') {
+            console.error('Invalid token:', error);
+            return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+        }
+
+        // Handle other unexpected errors.
+        console.error('Error verifying token:', error);
+        return res.status(500).json({ error: 'Internal server error during token verification' });
+    }
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/middleware/validateTask.js ---
+
+// Backend/middleware/validateTask.js
+const { body, validationResult } = require('express-validator');
+
+const validateTask = [
+    body('project_id')
+        .exists().withMessage('project_id is required')
+        .isInt({ gt: 0 }).withMessage('project_id must be a positive integer'),
+    body('stage_id')
+        .exists().withMessage('stage_id is required')
+        .isInt({ gt: 0 }).withMessage('stage_id must be a positive integer'),
+    body('task_name')
+        .exists().withMessage('task_name is required')
+        .isString().withMessage('task_name must be a string')
+        .notEmpty().withMessage('task_name cannot be empty'),
+    body('description')
+        .optional()
+        .isString().withMessage('description must be a string'),
+    body('due_date')
+        .optional()
+        .isISO8601().withMessage('due_date must be a valid date'),
+    body('priority')
+        .exists().withMessage('priority is required')
+        .isIn(['Low', 'Medium', 'High']).withMessage('priority must be Low, Medium, or High'),
+    // Add more validations as needed
+
+    // Middleware to check for validation errors
+    (req, res, next) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            const extractedErrors = errors.array().map(err => ({ [err.param]: err.msg }));
+            return res.status(400).json({
+                errors: extractedErrors,
+            });
+        }
+        next();
+    }
+];
+
+module.exports = validateTask;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/middleware/errorHandler.js ---
+
+// Backend/middleware/errorHandler.js
+const logger = require('../logger'); // Ensure correct path based on your directory structure
+
+function errorHandler(err, req, res, next) {
+    // Log the error with Winston
+    logger.error(`Unhandled error: ${err.message}`, { stack: err.stack });
+
+    // Respond with a generic message
+    res.status(500).json({ error: 'An unexpected error occurred.' });
+}
+
+module.exports = errorHandler;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/projectCollaborators.js ---
+
+// models/projectCollaborators.js
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class ProjectCollaborator extends Model {
+    static associate(models) {
+      console.log('Associating ProjectCollaborator with Project and User');
+      this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
+      this.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+      console.log('Associations for ProjectCollaborator:', this.associations);
+    }
+  }
+
+  ProjectCollaborator.init(
+    {
+      collaborator_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      project_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      user_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      role: { 
+        type: DataTypes.INTEGER, // Now store role as an integer
+        allowNull: false,
+        defaultValue: 0 // Default to Buyer (0)
+      },
+      assigned_at: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'ProjectCollaborator',
+      tableName: 'projectcollaborators',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return ProjectCollaborator;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/taskAssignment.js ---
+
+// models/taskassignment.js
+module.exports = (sequelize, DataTypes) => {
+    const TaskAssignment = sequelize.define('TaskAssignment', {
+        assignment_id: {
+            type: DataTypes.INTEGER,
+            primaryKey: true,
+            autoIncrement: true,
+        },
+        task_id: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+        user_id: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+        can_edit: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false,
+        },
+        can_view: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: true,
+        },
+    }, {
+        tableName: 'taskassignments',
+        timestamps: false,
+        modelName: 'TaskAssignment', // Ensure modelName is set so references to models.TaskAssignment work correctly
+    });
+
+    // Define associations
+    TaskAssignment.associate = (models) => {
+        TaskAssignment.belongsTo(models.Task, { foreignKey: 'task_id', as: 'task' });
+        TaskAssignment.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+    };
+
+    console.log("TaskAssignment model initialized.");
+    return TaskAssignment;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/user.js ---
+
+// models/user.js
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+    class User extends Model {
+        static associate(models) {
+            this.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
+            this.hasMany(models.ProjectCollaborator, { foreignKey: 'user_id', as: 'collaborations' });
+
+            // Many-to-many with Task through TaskAssignment
+            // This must match the association defined in task.js
+            // task.js uses as: 'assigned_users' for users on a task
+            // user.js uses as: 'assigned_tasks' to get tasks for a user
+            this.belongsToMany(models.Task, { 
+              through: models.TaskAssignment, 
+              as: 'assigned_tasks', 
+              foreignKey: 'user_id' 
+            });
+        }
+    }
+
+    User.init(
+        {
+            user_id: {
+                type: DataTypes.INTEGER,
+                primaryKey: true,
+                autoIncrement: true,
+            },
+            username: {
+                type: DataTypes.STRING,
+                allowNull: false,
+                unique: true,
+            },
+            email: {
+                type: DataTypes.STRING,
+                allowNull: false,
+                unique: true,
+            },
+            password_hash: {
+                type: DataTypes.STRING,
+                allowNull: false,
+            },
+            first_name: DataTypes.STRING,
+            last_name: DataTypes.STRING,
+            is_active: {
+                type: DataTypes.BOOLEAN,
+                defaultValue: true,
+            },
+            company_id: {
+              type: DataTypes.INTEGER,
+              allowNull: true,
+            },
+        },
+        {
+            sequelize,
+            modelName: 'User',
+            tableName: 'users',
+            timestamps: true,
+            createdAt: 'created_at',
+            updatedAt: 'updated_at',
+        }
+    );
+
+    console.log('User model initialized.');
+    return User;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/task.js ---
+
+// models/task.js
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Task extends Model {
+    static associate(models) {
+      this.belongsTo(models.Stage, { foreignKey: 'stage_id', as: 'stage' });
+      this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
+      this.belongsTo(models.User, { foreignKey: 'owner_id', as: 'owner' });
+      this.belongsToMany(models.User, {
+        through: models.TaskAssignment,
+        as: 'assigned_users',
+        foreignKey: 'task_id'
+      });
+    }
+  }
+
+  Task.init(
+    {
+      task_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      task_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      is_completed: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      // Temporarily allow null to avoid existing data issues
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      description: DataTypes.STRING,
+      due_date: DataTypes.DATE,
+      priority: DataTypes.STRING,
+    },
+    {
+      sequelize,
+      modelName: 'Task',
+      tableName: 'tasks',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Task;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/index.js ---
+
+const fs = require('fs');
+const path = require('path');
+const Sequelize = require('sequelize');
+const basename = path.basename(__filename);
+const env = process.env.NODE_ENV || 'development';
+const config = require('../config/config.json')[env];
+const db = {};
+
+const sequelize = new Sequelize(config.database, config.username, config.password, config);
+
+// Load models dynamically
+fs.readdirSync(__dirname)
+    .filter((file) => {
+        return file.indexOf('.') !== 0 && file !== basename && file.slice(-3) === '.js';
+    })
+    .forEach((file) => {
+        try {
+            const model = require(path.join(__dirname, file))(sequelize, Sequelize.DataTypes);
+            db[model.name] = model;
+            console.log(`Model loaded: ${model.name}`);
+        } catch (error) {
+            console.error(`Failed to load model from file: ${file}`, error);
+        }
+    });
+
+// Initialize associations
+Object.keys(db).forEach((modelName) => {
+    if (db[modelName].associate) {
+        try {
+            db[modelName].associate(db);
+            console.log(`Associations initialized for model: ${modelName}`);
+        } catch (error) {
+            console.error(`Failed to initialize associations for model: ${modelName}`, error);
+        }
+    }
+});
+
+// Test model availability
+const requiredModels = ['Project', 'User', 'Company'];
+requiredModels.forEach((modelName) => {
+    if (!db[modelName]) {
+        console.error(`Required model not found: ${modelName}. Please verify the model file.`);
+    } else {
+        console.log(`Model verified: ${modelName}`);
+    }
+});
+
+db.sequelize = sequelize;
+db.Sequelize = Sequelize;
+
+module.exports = db;
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/company.js ---
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Company extends Model {
+    static associate(models) {
+      this.hasMany(models.User, { foreignKey: 'company_id', as: 'users' });
+    }
+  }
+
+  Company.init(
+    {
+      company_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      company_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+      },
+      company_email: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+          model: 'users', // Ensure the table name matches your `User` model
+          key: 'user_id',
+        },
+        onDelete: 'CASCADE',
+        onUpdate: 'CASCADE',
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Company',
+      tableName: 'companies',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Company;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/stage.js ---
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Stage extends Model {
+    static associate(models) {
+      this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
+      this.hasMany(models.Task, { foreignKey: 'stage_id', as: 'tasks' });
+    }
+  }
+
+  Stage.init(
+    {
+      stage_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      stage_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      stage_order: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      is_custom: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      project_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Stage',
+      tableName: 'stages',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Stage;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/models/project.js ---
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Project extends Model {
+    static associate(models) {
+      this.hasMany(models.ProjectCollaborator, { foreignKey: 'project_id', as: 'collaborators' });
+      this.hasMany(models.Stage, { foreignKey: 'project_id', as: 'stages' });
+      this.hasMany(models.Task, { foreignKey: 'project_id', as: 'tasks' });
+    }
+  }
+
+  Project.init(
+    {
+      project_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      project_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+            model: 'users', // Ensure this matches the Users table
+            key: 'user_id',
+        },
+    },
+      description: DataTypes.TEXT,
+      status: {
+        type: DataTypes.ENUM('active', 'completed', 'archived'),
+        defaultValue: 'active',
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Project',
+      tableName: 'projects',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Project;
+};
+
+--- /Users/thomasdeane/Project/New_Start/Backend/server.js ---
+
+// Backend/server.js
+
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors'); // Import CORS
+const app = express();
+const userRoutes = require('./routes/userRoutes');
+const projectRoutes = require('./routes/projectRoutes');
+const taskRoutes = require('./routes/taskRoutes');
+const companyRoutes = require('./routes/companyRoutes');
+const authRoutes = require('./routes/authRoutes'); // Add auth routes
+const authMiddleware = require('./middleware/authMiddleware'); // Correct path and usage
+const db = require('./models'); // Models for associations
+const routes = require('./config/routeConfig');
+const logger = require('./logger'); // Import Winston logger
+const errorHandler = require('./middleware/errorHandler'); // Import centralized error handler
+
+// Middleware for JSON parsing
+app.use(express.json());
+
+// CORS configuration
+app.use(cors({
+    origin: 'http://localhost:3000', // Allow requests from React app
+    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed HTTP methods
+    allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
+    credentials: true, // Allow credentials (if needed)
+}));
+
+app.options('*', cors());
+
+// Log loaded routes using Winston
+logger.info(`Loaded Routes: ${JSON.stringify(routes)}`);
+
+// Route definitions
+app.use(routes.user, userRoutes); // User routes without authentication
+app.use(routes.project, authMiddleware, projectRoutes); // Protect project routes
+app.use(routes.task, authMiddleware, taskRoutes); // Protect task routes
+app.use(routes.company, authMiddleware, companyRoutes); // Protect company routes
+app.use('/api/auth', authRoutes); // Add authentication routes
+
+// Example protected route
+app.get('/api/protected', authMiddleware, (req, res) => {
+    logger.info(`Accessing protected route for user: ${JSON.stringify(req.user)}`);
+    res.status(200).json({ message: 'You have accessed a protected route', user: req.user });
+});
+
+// Remove the existing inline error handling middleware
+// and replace it with the centralized error handler below
+
+// Database synchronization
+db.sequelize.sync({ alter: true })
+    .then(() => logger.info('Database synced successfully'))
+    .catch(err => logger.error('Database sync error:', err));
+
+// Start the server
+const PORT = process.env.PORT || 5001;
+app.listen(PORT, () => logger.info(`Server running on port ${PORT}`));
+
+// Use the centralized error handling middleware
+app.use(errorHandler);
+
+/*
+Notes:
+1. Replaced all `console.log` statements with `logger.info` for general information.
+2. Replaced the inline error handling middleware with a centralized one (`errorHandler`).
+3. Ensured that all significant actions and potential issues are logged appropriately.
+4. The error handling middleware should be the last middleware added to the app.
+*/
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/components/CreateTaskForm.js ---
+
+// Frontend/src/components/CreateTaskForm.js
+
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+
+const CreateTaskForm = ({ projectId, onTaskCreated }) => {
+  const [formData, setFormData] = useState({
+    stage_id: '',
+    task_name: '',
+    description: '',
+    due_date: '',
+    priority: 'Medium',
+  });
+  const [stages, setStages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Fetch stages for the project
+  useEffect(() => {
+    const fetchStages = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setStages(response.data);
+      } catch (error) {
+        console.error('Error fetching stages:', error);
+        toast.error('Failed to fetch stages.');
+      }
+    };
+
+    fetchStages();
+  }, [projectId]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    console.log('Form Data Before Submission:', formData); // Added log
+    if (!formData.stage_id) {
+      alert('Stage selection is required.');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const token = localStorage.getItem('jwtToken');
+
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...formData,
+          project_id: parseInt(projectId, 10), // Ensure project ID is a number
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task created successfully!');
+      setFormData({
+        stage_id: '',
+        task_name: '',
+        description: '',
+        due_date: '',
+        priority: 'Medium',
+      });
+      onTaskCreated(); // Callback to refresh data
+    } catch (error) {
+      console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to create task: ${error.response.data.message || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to create task.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="form-section margin-top">
+      <h4>Create a New Task</h4>
+
+      {/* Stage Selection */}
+      <div className="form-group">
+        <label htmlFor="stage_id">Stage:</label>
+        <select
+          id="stage_id"
+          name="stage_id"
+          value={formData.stage_id}
+          onChange={handleChange}
+          required
+        >
+          <option value="" disabled>Select a stage</option>
+          {stages.map((stage) => (
+            <option key={stage.stage_id} value={stage.stage_id}>
+              {stage.stage_name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Task Name */}
+      <div className="form-group">
+        <label htmlFor="task_name">Task Name:</label>
+        <input
+          type="text"
+          id="task_name"
+          name="task_name"
+          value={formData.task_name}
+          onChange={handleChange}
+          required
+        />
+      </div>
+
+      {/* Description */}
+      <div className="form-group">
+        <label htmlFor="description">Description:</label>
+        <input
+          type="text"
+          id="description"
+          name="description"
+          value={formData.description}
+          onChange={handleChange}
+        />
+      </div>
+
+      {/* Due Date */}
+      <div className="form-group">
+        <label htmlFor="due_date">Due Date:</label>
+        <input
+          type="date"
+          id="due_date"
+          name="due_date"
+          value={formData.due_date}
+          onChange={handleChange}
+        />
+      </div>
+
+      {/* Priority */}
+      <div className="form-group">
+        <label htmlFor="priority">Priority:</label>
+        <select
+          id="priority"
+          name="priority"
+          value={formData.priority}
+          onChange={handleChange}
+        >
+          <option value="Low">Low</option>
+          <option value="Medium">Medium</option>
+          <option value="High">High</option>
+        </select>
+      </div>
+
+      {/* Form Actions */}
+      <div className="form-actions">
+        <button className="button" type="submit" disabled={isLoading}>
+          {isLoading ? 'Creating...' : 'Create Task'}
+        </button>
+        <button className="button button-secondary" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+};
+
+export default CreateTaskForm;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/components/TaskForm.js ---
+
+// Frontend/src/components/TaskForm.js
+
+import React, { useState, useEffect } from 'react';
+
+const TaskForm = ({ 
+  mode = 'create', 
+  taskData = {}, 
+  onSubmit, 
+  onCancel, 
+  isLoading, 
+  stages,
+  initialStageId = ''
+}) => {
+  const [formData, setFormData] = useState({
+    stage_id: initialStageId || (taskData?.stage_id !== undefined ? String(taskData.stage_id) : ''),
+    task_name: taskData?.task_name || '',
+    description: taskData?.description || '',
+    due_date: taskData?.due_date || '',
+    priority: taskData?.priority || 'Medium',
+  });
+
+  // Update formData.stage_id if initialStageId changes
+  useEffect(() => {
+    if (initialStageId && initialStageId !== 'undefined') {
+      setFormData((prev) => ({ ...prev, stage_id: initialStageId }));
+      console.log('Updated stage_id to:', initialStageId); // Added log
+    } else {
+      console.warn('initialStageId is undefined or invalid:', initialStageId);
+    }
+  }, [initialStageId]);
+
+  // Log formData changes for debugging
+  useEffect(() => {
+    console.log('Form Data Updated:', formData);
+  }, [formData]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    console.log('Form Data Before Submission:', formData); // Added log
+    if (!formData.stage_id || formData.stage_id === 'undefined') {
+      alert('Stage selection is required.');
+      return;
+    }
+    onSubmit({
+      ...formData,
+      stage_id: parseInt(formData.stage_id, 10), // Ensure stage_id is a number
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="form-section margin-top">
+      <h4>{mode === 'create' ? 'Create a New Task' : 'Edit Task'}</h4>
+
+      {/* Stage Selection */}
+      <div className="form-group">
+        <label htmlFor="stage_id">Stage:</label>
+        <select
+          id="stage_id"
+          name="stage_id"
+          value={formData.stage_id}
+          onChange={handleChange}
+          required
+        >
+          <option value="" disabled>Select a stage</option>
+          {stages.map((stage) => (
+            <option key={stage.stage_id} value={String(stage.stage_id)}>
+              {stage.stage_name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Task Name */}
+      <div className="form-group">
+        <label htmlFor="task_name">Task Name:</label>
+        <input
+          type="text"
+          id="task_name"
+          name="task_name"
+          value={formData.task_name}
+          onChange={handleChange}
+          required
+        />
+      </div>
+
+      {/* Description */}
+      <div className="form-group">
+        <label htmlFor="description">Description:</label>
+        <input
+          type="text"
+          id="description"
+          name="description"
+          value={formData.description}
+          onChange={handleChange}
+        />
+      </div>
+
+      {/* Due Date */}
+      <div className="form-group">
+        <label htmlFor="due_date">Due Date:</label>
+        <input
+          type="date"
+          id="due_date"
+          name="due_date"
+          value={formData.due_date}
+          onChange={handleChange}
+        />
+      </div>
+
+      {/* Priority */}
+      <div className="form-group">
+        <label htmlFor="priority">Priority:</label>
+        <select
+          id="priority"
+          name="priority"
+          value={formData.priority}
+          onChange={handleChange}
+        >
+          <option value="Low">Low</option>
+          <option value="Medium">Medium</option>
+          <option value="High">High</option>
+        </select>
+      </div>
+
+      {/* Form Actions */}
+      <div className="form-actions">
+        <button className="button" type="submit" disabled={isLoading}>
+          {mode === 'create' ? 'Create Task' : 'Save Changes'}
+        </button>
+        <button className="button button-secondary" type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+
+      {/* Visual Indicator for Debugging */}
+      <div style={{ marginTop: '10px', color: 'blue' }}>
+        <p>Current stage_id: {formData.stage_id}</p>
+      </div>
+    </form>
+  );
+};
+
+export default TaskForm;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/components/Header.js ---
+
+import React from 'react';
+import { Link } from 'react-router-dom';
+
+function Header() {
+  return (
+    <header>
+      <nav>
+        <Link to="/login">Login</Link> | <Link to="/register">Register</Link>
+      </nav>
+    </header>
+  );
+}
+
+export default Header;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/components/StagesSection.js ---
+
+// Frontend/src/components/StagesSection.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import TaskForm from './TaskForm';
+
+function StagesSection({ projectId, stages, refetchProject }) {
+  const [currentStage, setCurrentStage] = useState(null);
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [editTaskData, setEditTaskData] = useState(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
+
+  // Handle task creation
+  const handleCreateTask = async (taskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      console.log('Creating task with data:', taskData);
+
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...taskData,
+          project_id: parseInt(projectId, 10),
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      console.log('Task created:', response.data);
+      toast.success('Task created successfully!');
+      setShowTaskForm(false);
+      setCurrentStage(null);
+      refetchProject();
+    } catch (error) {
+      console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        if (error.response.data.errors && Array.isArray(error.response.data.errors)) {
+          error.response.data.errors.forEach((err) => {
+            toast.error(err.msg || 'Failed to create task.');
+          });
+        } else {
+          toast.error(`Failed to create task: ${error.response.data.message || 'Unknown error.'}`);
+        }
+      } else {
+        toast.error('Failed to create task.');
+      }
+    }
+  };
+
+  // Handle task editing
+  const handleEditTask = async (taskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      console.log('Updating task with ID:', editTaskData.task_id, 'and data:', taskData);
+
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/tasks/${editTaskData.task_id}`,
+        {
+          ...taskData,
+          project_id: parseInt(projectId, 10),
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task updated successfully!');
+      setEditTaskData(null);
+      setShowTaskForm(false);
+      setCurrentStage(null);
+      refetchProject();
+    } catch (error) {
+      console.error('Error updating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to update task: ${error.response.data.message || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to update task.');
+      }
+    }
+  };
+
+  // Handle task deletion
+  const handleDeleteTask = async (taskId) => {
+    const token = localStorage.getItem('jwtToken');
+    if (window.confirm('Are you sure you want to delete this task?')) {
+      try {
+        await axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        toast.success('Task deleted successfully!');
+        refetchProject();
+      } catch (error) {
+        console.error('Error deleting task:', error);
+        toast.error('Failed to delete task.');
+      }
+    }
+  };
+
+  // Handle bulk task deletion
+  const handleDeleteSelectedTasks = async () => {
+    const token = localStorage.getItem('jwtToken');
+    if (selectedTaskIds.length === 0) {
+      toast.warn('No tasks selected.');
+      return;
+    }
+    if (window.confirm('Are you sure you want to delete selected tasks?')) {
+      try {
+        await Promise.all(
+          selectedTaskIds.map((taskId) =>
+            axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            })
+          )
+        );
+        toast.success('Selected tasks deleted successfully!');
+        setSelectedTaskIds([]);
+        refetchProject();
+      } catch (error) {
+        console.error('Error deleting tasks:', error);
+        toast.error('Failed to delete selected tasks.');
+      }
+    }
+  };
+
+  // Handle task checkbox selection
+  const handleTaskCheckboxChange = (taskId, checked) => {
+    setSelectedTaskIds((prev) => {
+      if (checked) return [...prev, taskId];
+      return prev.filter((id) => id !== taskId);
+    });
+  };
+
+  return (
+    <div className="stages-section section">
+      <h2>Stages & Tasks</h2>
+      {stages.length > 0 ? (
+        stages
+          .sort((a, b) => a.stage_order - b.stage_order)
+          .map((stage) => (
+            <div key={stage.stage_id} className="stage-container">
+              <h3>{stage.stage_name}</h3>
+
+              {/* Display Existing Tasks */}
+              {stage.tasks && stage.tasks.length > 0 ? (
+                <div className="table-responsive">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Due Date</th>
+                        <th>Priority</th>
+                        <th>Completed</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stage.tasks.map((task) => (
+                        <tr key={task.task_id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedTaskIds.includes(task.task_id)}
+                              onChange={(e) =>
+                                handleTaskCheckboxChange(task.task_id, e.target.checked)
+                              }
+                            />
+                          </td>
+                          <td>{task.task_name}</td>
+                          <td>{task.description || ''}</td>
+                          <td>{task.due_date || ''}</td>
+                          <td>{task.priority || ''}</td>
+                          <td>{task.is_completed ? 'Yes' : 'No'}</td>
+                          <td>
+                            <button
+                              className="button"
+                              onClick={() => {
+                                setEditTaskData(task);
+                                setShowTaskForm(true);
+                                setCurrentStage(stage);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="button button-secondary"
+                              onClick={() => handleDeleteTask(task.task_id)}
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p>No tasks in this stage.</p>
+              )}
+
+              {/* Add Task Button */}
+              <button
+                className="button margin-top"
+                onClick={() => {
+                  setCurrentStage(stage);
+                  setShowTaskForm(true);
+                }}
+              >
+                Add Task
+              </button>
+            </div>
+          ))
+      ) : (
+        <p>No stages found.</p>
+      )}
+
+      {/* Task Form for Create/Edit */}
+      {showTaskForm && (
+        <TaskForm
+          key={currentStage ? currentStage.stage_id : 'new'}
+          mode={editTaskData ? 'edit' : 'create'}
+          taskData={editTaskData}
+          onSubmit={editTaskData ? handleEditTask : handleCreateTask}
+          onCancel={() => {
+            setEditTaskData(null);
+            setShowTaskForm(false);
+            setCurrentStage(null);
+          }}
+          stages={stages} // Pass stages for dropdown
+          initialStageId={currentStage ? String(currentStage.stage_id) : ''}
+        />
+      )}
+
+      {/* Bulk Delete Button */}
+      {selectedTaskIds.length > 0 && (
+        <button className="button margin-top" onClick={handleDeleteSelectedTasks}>
+          Delete Selected Tasks
+        </button>
+      )}
+    </div>
+  );
+}
+
+export default StagesSection;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/components/CollaboratorsSection.js ---
+
+// src/components/CollaboratorsSection.js
+import React, { useState } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+
+function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }) {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newCollaboratorEmail, setNewCollaboratorEmail] = useState('');
+  const [newCollaboratorRole, setNewCollaboratorRole] = useState('0');
+
+  const roleOptions = [
+    { value: '0', label: 'Buyer' },
+    { value: '1', label: 'Seller' },
+    { value: '2', label: 'Buyer Solicitor' },
+    { value: '3', label: 'Seller Solicitor' },
+    { value: '4', label: 'Estate Agent' },
+    { value: '5', label: 'Mortgage Advisor' },
+    { value: '6', label: 'Mortgage Vendor' },
+    { value: '7', label: 'Deposit Gifter' }
+  ];
+
+  const handleAddCollaborator = async (e) => {
+    e.preventDefault();
+    try {
+      const token = localStorage.getItem('jwtToken');
+      await axios.post(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators`, {
+        email: newCollaboratorEmail,
+        role: parseInt(newCollaboratorRole, 10),
+      }, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      toast.success('Collaborator added successfully!');
+      setShowAddForm(false);
+      setNewCollaboratorEmail('');
+      setNewCollaboratorRole('0');
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error adding collaborator:', error);
+      toast.error('Failed to add collaborator.');
+    }
+  };
+
+  const handleDeleteCollaborator = async (collaborator_id) => {
+    const token = localStorage.getItem('jwtToken');
+    if (window.confirm('Are you sure you want to remove this collaborator?')) {
+      try {
+        await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaborator_id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        toast.success('Collaborator removed successfully!');
+        refetchCollaborators();
+      } catch (error) {
+        console.error('Error removing collaborator:', error);
+        toast.error('Failed to remove collaborator.');
+      }
+    }
+  };
+
+  return (
+    <div className="collaborators-section section">
+      <h2>Project Team</h2>
+      {collaborators && collaborators.length > 0 ? (
+        <div className="table-responsive">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {collaborators.map((collab) => (
+                <tr key={collab.collaborator_id}>
+                  <td>{collab.user?.email || 'N/A'}</td>
+                  <td>{roleOptions.find((opt) => opt.value === String(collab.role))?.label || 'Member'}</td>
+                  <td>
+                    <button className="button" onClick={() => handleDeleteCollaborator(collab.collaborator_id)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p>No collaborators found.</p>
+      )}
+
+      <button className="button margin-top" onClick={() => setShowAddForm(!showAddForm)}>
+        {showAddForm ? 'Cancel' : 'Add Collaborator'}
+      </button>
+      {showAddForm && (
+        <form onSubmit={handleAddCollaborator} className="form-section margin-top">
+          <h4>Add a New Collaborator</h4>
+          <div className="form-group">
+            <label htmlFor="email">Email:</label>
+            <input
+              type="email"
+              id="email"
+              value={newCollaboratorEmail}
+              onChange={(e) => setNewCollaboratorEmail(e.target.value)}
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="role">Role:</label>
+            <select
+              id="role"
+              value={newCollaboratorRole}
+              onChange={(e) => setNewCollaboratorRole(e.target.value)}
+            >
+              {roleOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+          <button className="button" type="submit">Add</button>
+          <button className="button button-secondary" type="button" onClick={() => setShowAddForm(false)}>Cancel</button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+export default CollaboratorsSection;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/components/ProtectedRoute.js ---
+
+import React from 'react';
+import { Navigate } from 'react-router-dom';
+
+function ProtectedRoute({ children }) {
+  const token = localStorage.getItem('jwtToken'); // Check for token in localStorage
+
+  // Redirect to login if no token is found
+  return token ? children : <Navigate to="/login" />;
+}
+
+export default ProtectedRoute;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/Profile.js ---
+
+// frontend/src/pages/Profile.js
+import React, { useContext, useState, useEffect } from 'react';
+import { UserContext } from '../context/UserContext';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import '../styles.css'; // Correct path to your global styles
+
+function Profile() {
+  const { user, setUser, loading } = useContext(UserContext);
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    first_name: '',
+    last_name: '',
+  });
+
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading) {
+      const token = localStorage.getItem('jwtToken');
+      if (!user) {
+        if (!token) {
+          toast.warn('You must be logged in to access the profile.');
+          navigate('/login');
+        }
+      } else {
+        setFormData({
+          username: user.username || '',
+          email: user.email || '',
+          first_name: user.first_name || '',
+          last_name: user.last_name || '',
+        });
+      }
+    }
+  }, [user, loading, navigate]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prevData) => ({ ...prevData, [name]: value }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('No token found. Please log in again.');
+      return navigate('/login');
+    }
+
+    try {
+      const userId = user?.user_id;
+      const response = await axios.put(
+        `${process.env.REACT_APP_API_URL}/users/${userId}`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const updatedUser = response.data.user || response.data;
+      setUser(updatedUser);
+
+      toast.success('Profile updated successfully!');
+    } catch (err) {
+      console.error('Error updating profile:', err.response?.data || err.message);
+      const errorMessage = err.response?.data?.error || 'Failed to update profile. Please try again.';
+      toast.error(errorMessage);
+    }
+  };
+
+  if (loading) {
+    return <p>Loading your profile...</p>;
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  return (
+    <div className="container"> {/* Global container styling */}
+      <h1>Your Profile</h1>
+      <form onSubmit={handleSubmit} className="section"> {/* Section styling */}
+        <div className="form-group"> {/* Form-group styling */}
+          <label>Username:</label>
+          <input
+            type="text"
+            name="username"
+            value={formData.username}
+            onChange={handleChange}
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Email:</label>
+          <input
+            type="email"
+            name="email"
+            value={formData.email}
+            onChange={handleChange}
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label>First Name:</label>
+          <input
+            type="text"
+            name="first_name"
+            value={formData.first_name}
+            onChange={handleChange}
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Last Name:</label>
+          <input
+            type="text"
+            name="last_name"
+            value={formData.last_name}
+            onChange={handleChange}
+          />
+        </div>
+
+        <button type="submit" className="button">Save Changes</button> {/* Button styling */}
+      </form>
+    </div>
+  );
+}
+
+export default Profile;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/Register.js ---
+
+// frontend/src/pages/Register.js
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify'; // Import toast
+import '../styles.css';
+
+function Register() {
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    first_name: '',
+    last_name: '',
+  });
+
+  const [error, setError] = useState(null);
+  const navigate = useNavigate();
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null); // Reset error state
+
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/users/create`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const { token } = response.data; // Extract token from response
+      localStorage.setItem('jwtToken', token); // Store JWT in localStorage
+
+      toast.success('Registration successful!');
+      navigate('/dashboard'); // Redirect to dashboard after successful registration
+    } catch (err) {
+      console.error('Registration error details:', err.response?.data || err.message);
+      const errorMessage = err.response?.data?.error || 'Something went wrong. Please try again.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    }
+  };
+
+  return (
+    <div className="container">
+      <div className="section">
+        <h1>Register</h1>
+        <form onSubmit={handleSubmit} className="form-group">
+          <label htmlFor="username">Username:</label>
+          <input
+            id="username"
+            type="text"
+            name="username"
+            value={formData.username}
+            onChange={handleChange}
+            placeholder="Enter your username"
+            required
+          />
+
+          <label htmlFor="email">Email:</label>
+          <input
+            id="email"
+            type="email"
+            name="email"
+            value={formData.email}
+            onChange={handleChange}
+            placeholder="Enter your email"
+            required
+          />
+
+          <label htmlFor="password">Password:</label>
+          <input
+            id="password"
+            type="password"
+            name="password"
+            value={formData.password}
+            onChange={handleChange}
+            placeholder="Enter your password"
+            required
+          />
+
+          <label htmlFor="first_name">First Name:</label>
+          <input
+            id="first_name"
+            type="text"
+            name="first_name"
+            value={formData.first_name}
+            onChange={handleChange}
+            placeholder="Enter your first name"
+          />
+
+          <label htmlFor="last_name">Last Name:</label>
+          <input
+            id="last_name"
+            type="text"
+            name="last_name"
+            value={formData.last_name}
+            onChange={handleChange}
+            placeholder="Enter your last name"
+          />
+
+          {error && <p className="error-message">{error}</p>}
+
+          <button type="submit" className="button">
+            Register
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default Register;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/ProjectDetails.js ---
+
+// Frontend/src/pages/ProjectDetails.js
+
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import '../styles.css';
+import CollaboratorsSection from '../components/CollaboratorsSection';
+import StagesSection from '../components/StagesSection';
+
+function ProjectDetails() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const [project, setProject] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [collaborators, setCollaborators] = useState([]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to view this project.');
+      navigate('/login');
+      return;
+    }
+    fetchProjectDetails();
+    fetchCollaborators();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, navigate]);
+
+  const fetchProjectDetails = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      console.log('Project Data:', response.data); // Verify stages structure
+      setProject(response.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error fetching project:', error);
+      toast.error('Failed to fetch project.');
+      setLoading(false);
+    }
+  };
+
+  const fetchCollaborators = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}/collaborators`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setCollaborators(response.data);
+    } catch (error) {
+      console.error('Error fetching collaborators:', error);
+      toast.error('Failed to fetch collaborators.');
+    }
+  };
+
+  const refetchProject = () => {
+    fetchProjectDetails();
+    fetchCollaborators();
+  };
+
+  if (loading) return <p className="margin-top">Loading project details...</p>;
+  if (!project) return <p className="margin-top">Project not found or you do not have access.</p>;
+
+  return (
+    <div className="container">
+      {/* Project Details */}
+      <div className="section">
+        <h1>{project.project_name}</h1>
+        <p>{project.description}</p>
+      </div>
+
+      {/* Collaborators Section */}
+      <CollaboratorsSection
+        projectId={id}
+        collaborators={collaborators}
+        refetchCollaborators={fetchCollaborators}
+      />
+
+      {/* Stages and Tasks Section */}
+      <StagesSection
+        projectId={id}
+        stages={project.stages}
+        refetchProject={refetchProject}
+      />
+    </div>
+  );
+}
+
+export default ProjectDetails;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/Projects.js ---
+
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Link, useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import '../styles.css'; // Correct path to your global styles
+
+function Projects() {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to view projects.');
+      navigate('/login');
+      return;
+    }
+
+    axios.get(`${process.env.REACT_APP_API_URL}/projects/user`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        setProjects(response.data);
+        setLoading(false);
+      })
+      .catch((error) => {
+        console.error('Error fetching projects:', error);
+        toast.error('Failed to fetch projects');
+        setLoading(false);
+      });
+  }, [navigate]);
+
+  if (loading) return <p>Loading projects...</p>;
+
+  return (
+    <div className="container"> {/* Global container styling */}
+      <div className="section"> {/* Section styling */}
+        <h1>Your Projects</h1>
+        <button onClick={() => navigate('/projects/create')} className="button"> {/* Styled button */}
+          Create New Project
+        </button>
+        {projects.length === 0 ? (
+          <p>No projects found.</p>
+        ) : (
+          <ul>
+            {projects.map((proj) => (
+              <li key={proj.project_id}>
+                <Link to={`/projects/${proj.project_id}`} className="link">{proj.project_name}</Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default Projects;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/Login.js ---
+
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import '../styles.css';
+
+function Login() {
+  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [error, setError] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (token) {
+      navigate('/dashboard'); // Redirect to dashboard if logged in
+    }
+  }, [navigate]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/auth/login`,
+        formData,
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+
+      localStorage.setItem('jwtToken', response.data.token); // Save the token
+      alert('Login successful!');
+      navigate('/dashboard'); // Redirect to dashboard
+    } catch (err) {
+      console.error('Login error:', err.response?.data || err.message);
+      const errorMessage = err.response?.data?.error || 'Invalid login credentials';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    }
+  };
+
+  return (
+    <div className="container"> {/* Global container styling */}
+      <h1>Login</h1>
+      <form onSubmit={handleSubmit} className="section"> {/* Section styling */}
+        <div className="form-group"> {/* Form-group styling */}
+          <label>Email:</label>
+          <input type="email" name="email" onChange={handleChange} required />
+        </div>
+        <div className="form-group">
+          <label>Password:</label>
+          <input type="password" name="password" onChange={handleChange} required />
+        </div>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
+        <button type="submit" className="button">Login</button> {/* Button styling */}
+      </form>
+    </div>
+  );
+}
+
+export default Login;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/CreateProject.js ---
+
+// frontend/src/pages/CreateProject.js
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import '../styles.css';
+
+function CreateProject() {
+  const [projectName, setProjectName] = useState('');
+  const [description, setDescription] = useState('');
+  const [userRole, setUserRole] = useState('0'); // 0 = Buyer, 1 = Seller
+  const navigate = useNavigate();
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to create a project.');
+      return navigate('/login');
+    }
+
+    const parsedRole = parseInt(userRole, 10);
+
+    axios
+      .post(
+        `${process.env.REACT_APP_API_URL}/projects/create`,
+        {
+          project_name: projectName,
+          description,
+          user_role: parsedRole,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      )
+      .then(() => {
+        toast.success('Project created successfully!');
+        navigate('/projects');
+      })
+      .catch((error) => {
+        console.error('Error creating project:', error);
+        toast.error('Failed to create project.');
+      });
+  };
+
+  return (
+    <div className="container">
+      <div className="section">
+        <h1>Create a New Project</h1>
+        <form onSubmit={handleSubmit} className="form-group">
+          <label htmlFor="projectName">Project Name:</label>
+          <input
+            id="projectName"
+            type="text"
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            placeholder="Enter the project name"
+            required
+          />
+
+          <label htmlFor="description">Description (optional):</label>
+          <textarea
+            id="description"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Enter a brief description"
+          />
+
+          <h3>Are you Buying or Selling a house?</h3>
+          <div className="flex-row">
+            <label>
+              <input
+                type="radio"
+                name="user_role"
+                value="0"
+                checked={userRole === '0'}
+                onChange={(e) => setUserRole(e.target.value)}
+              />
+              I am Buying (Role = Buyer)
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="user_role"
+                value="1"
+                checked={userRole === '1'}
+                onChange={(e) => setUserRole(e.target.value)}
+              />
+              I am Selling (Role = Seller)
+            </label>
+          </div>
+
+          <button type="submit" className="button">
+            Create
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default CreateProject;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/CreateTaskPage.js ---
+
+// Frontend/src/pages/CreateTaskPage.js
+
+import React, { useEffect, useState } from 'react';
+import TaskForm from '../components/TaskForm';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { useNavigate } from 'react-router-dom';
+
+const CreateTaskPage = () => {
+  const [stages, setStages] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [initialStageId, setInitialStageId] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const fetchStages = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        const projectId = 11; // Replace with dynamic project ID as needed
+        const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        console.log('Fetched stages:', response.data);
+        setStages(response.data);
+        if (response.data.length > 0) {
+          setInitialStageId(String(response.data[0].stage_id)); // Preselect the first stage
+        }
+      } catch (error) {
+        console.error('Error fetching stages:', error);
+        toast.error('Failed to fetch stages.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchStages();
+  }, []);
+
+  const handleCreateTask = async (taskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      console.log('Creating task with data:', taskData);
+
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...taskData,
+          project_id: 11, // Replace with dynamic project ID as needed
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task created successfully!');
+      navigate('/projects'); // Redirect after successful creation
+    } catch (error) {
+      console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to create task: ${error.response.data.message || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to create task.');
+      }
+    }
+  };
+
+  if (isLoading) return <p>Loading...</p>;
+
+  if (stages.length === 0) {
+    return <p>No stages available. Please add stages to create tasks.</p>;
+  }
+
+  return (
+    <div>
+      <h1>Create New Task</h1>
+      <TaskForm
+        mode="create"
+        onSubmit={handleCreateTask}
+        onCancel={() => navigate('/projects')}
+        stages={stages}
+        initialStageId={initialStageId} // Preselect the first stage
+      />
+    </div>
+  );
+};
+
+export default CreateTaskPage;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/pages/Dashboard.js ---
+
+// frontend/src/pages/Dashboard.js
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import '../styles.css';
+
+function Dashboard() {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to access the dashboard.');
+      navigate('/login');
+      return;
+    }
+
+    axios.get(`${process.env.REACT_APP_API_URL}/projects/user`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    .then((response) => {
+      setProjects(response.data);
+      setLoading(false);
+    })
+    .catch((error) => {
+      console.error('Error fetching projects:', error);
+      toast.error('Failed to fetch projects');
+      setLoading(false);
+    });
+  }, [navigate]);
+
+  if (loading) return <p>Loading your dashboard...</p>;
+
+  const openProjects = projects.filter(p => p.status === 'active');
+  const completedProjects = projects.filter(p => p.status === 'completed');
+
+  const roleMapping = [
+    { value: 0, label: 'Buyer' },
+    { value: 1, label: 'Seller' },
+    { value: 2, label: 'Buyer Solicitor' },
+    { value: 3, label: 'Seller Solicitor' },
+    { value: 4, label: 'Estate Agent' },
+    { value: 5, label: 'Mortgage Advisor' },
+    { value: 6, label: 'Mortgage Vendor' },
+    { value: 7, label: 'Deposit Gifter' }
+  ];
+
+  const renderProject = (proj) => {
+    return (
+      <div key={proj.project_id} className="project-card section">
+        <Link to={`/projects/${proj.project_id}`}>
+          <h3>{proj.project_name}</h3>
+        </Link>
+        <p>{proj.description}</p>
+        <p>Status: {proj.status}</p>
+        <p>Created: {new Date(proj.created_at).toLocaleString()}</p>
+        <p>Last Updated: {new Date(proj.updated_at).toLocaleString()}</p>
+        {proj.collaborators && proj.collaborators.length > 0 && (
+          <div>
+            <h4>Collaborators:</h4>
+            <ul>
+              {proj.collaborators.map((c) => {
+                const roleObj = roleMapping.find(r => r.value === c.role);
+                const roleLabel = roleObj ? roleObj.label : 'Unknown';
+                return (
+                  <li key={c.user_id}>
+                    {c.user?.email || 'N/A'} - {roleLabel}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="container">
+      <div className="section">
+        <h1>Welcome to Your Dashboard</h1>
+        <p>Hello, here are your projects:</p>
+
+        <h2>Open Projects</h2>
+        {openProjects.length === 0 ? <p>No open projects.</p> : openProjects.map(renderProject)}
+
+        <h2>Completed Projects</h2>
+        {completedProjects.length === 0 ? <p>No completed projects.</p> : completedProjects.map(renderProject)}
+
+        {/* Center the button at the bottom of the page */}
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '40px' }}>
+          <button className="button" onClick={() => navigate('/projects/create')}>
+            Create New Project
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default Dashboard;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/context/UserContext.js ---
+
+// frontend/src/context/UserContext.js
+import React, { createContext, useState, useEffect } from 'react';
+import axios from 'axios';
+
+export const UserContext = createContext(null);
+
+export function UserProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (token) {
+      axios.get(`${process.env.REACT_APP_API_URL}/users/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((response) => {
+          // Check the shape of response.data here. If response.data is the user directly,
+          // this is correct. If your backend returns { user: { ... } }, then use response.data.user.
+          console.log('User data from /users/me:', response.data); // Debug log
+          setUser(response.data);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch user:', error);
+          localStorage.removeItem('jwtToken');
+        })
+        .finally(() => setLoading(false));
+    } else {
+      // No token means no user, just stop loading.
+      setLoading(false);
+    }
+  }, []);
+
+  return (
+    <UserContext.Provider value={{ user, setUser, loading }}>
+      {children}
+    </UserContext.Provider>
+  );
+}
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/app.js ---
+
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
+import Register from './pages/Register';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import Profile from './pages/Profile';
+import Projects from './pages/Projects';
+import CreateProject from './pages/CreateProject';
+import ProjectDetails from './pages/ProjectDetails';
+import ProtectedRoute from './components/ProtectedRoute';
+import { UserProvider } from './context/UserContext';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import './styles.css'; // Global styles imported here
+
+
+function App() {
+  const isAuthenticated = !!localStorage.getItem('jwtToken');
+
+  return (
+    <UserProvider>
+      <Router>
+        <nav>
+          <ul>
+            {!isAuthenticated && (
+              <>
+                <li><Link to="/register">Register</Link></li>
+                <li><Link to="/login">Login</Link></li>
+              </>
+            )}
+            {isAuthenticated && (
+              <>
+                <li><Link to="/dashboard">Dashboard</Link></li>
+                <li><Link to="/profile">Profile</Link></li>
+                <li><Link to="/projects">Projects</Link></li>
+                <li>
+                  <button
+                    onClick={() => {
+                      localStorage.removeItem('jwtToken');
+                      window.location.href = '/login';
+                    }}
+                  >
+                    Logout
+                  </button>
+                </li>
+              </>
+            )}
+          </ul>
+        </nav>
+
+        <Routes>
+          {/* Public Routes */}
+          <Route path="/register" element={<Register />} />
+          <Route path="/login" element={<Login />} />
+
+          {/* Protected Routes */}
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects"
+            element={
+              <ProtectedRoute>
+                <Projects />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/create"
+            element={
+              <ProtectedRoute>
+                <CreateProject />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/:id"
+            element={
+              <ProtectedRoute>
+                <ProjectDetails />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+        <ToastContainer position="top-right" autoClose={5000} />
+      </Router>
+    </UserProvider>
+  );
+}
+
+export default App;
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/styles.css ---
+
+/* src/styles.css */
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.section {
+  margin-bottom: 40px;
+}
+
+.collaborators-section, .stages-section, .stage-container {
+  background-color: #f9f9f9;
+  padding: 15px 20px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  margin-bottom: 20px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 20px;
+}
+
+.table th, .table td {
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+.table th {
+  background-color: #f2f2f2;
+}
+
+.table-responsive {
+  overflow-x: auto;
+}
+
+.button {
+  padding: 8px 12px;
+  margin-right: 8px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.button:hover {
+  background-color: #0056b3;
+}
+
+.button-secondary {
+  background-color: #6c757d;
+}
+
+.button-secondary:hover {
+  background-color: #5a6268;
+}
+
+.margin-top {
+  margin-top: 20px;
+}
+
+.margin-bottom {
+  margin-bottom: 20px;
+}
+
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-section {
+  background-color: #fff;
+  padding: 15px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  margin-top: 20px;
+}
+
+.create-stage-form, .add-collaborator-form, .create-task-form {
+  /* Additional specific styles can be added here if needed */
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+input[type="text"], input[type="email"], input[type="date"], select {
+  width: 100%;
+  padding: 8px;
+  box-sizing: border-box;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  height: 35px;
+}
+
+input[type="checkbox"] {
+  transform: scale(1.2);
+}
+
+.stage-container {
+  /* Already consolidated above */
+}
+
+/* Additional styles for responsiveness */
+@media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+
+  .button {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+}
+
+--- /Users/thomasdeane/Project/New_Start/frontend/src/index.js ---
+
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import './index.css';
+import App from './App';
+import reportWebVitals from './reportWebVitals';
+import './styles.css'; // Global styles imported here
+
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+
+// If you want to start measuring performance in your app, pass a function
+// to log results (for example: reportWebVitals(console.log))
+// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
+reportWebVitals();

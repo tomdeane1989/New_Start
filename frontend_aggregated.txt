@@ -1,0 +1,2613 @@
+
+
+--- frontend/src/components/CreateTaskForm.js ---
+
+// src/components/CreateTaskForm.js
+
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner } from 'react-bootstrap';
+
+const CreateTaskForm = ({ projectId, onTaskCreated, onCancel }) => {
+  const [formData, setFormData] = useState({
+    stage_id: '',
+    task_name: '',
+    description: '',
+    due_date: '',
+    priority: 'Medium',
+  });
+  const [stages, setStages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Fetch stages for the project
+  useEffect(() => {
+    const fetchStages = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        setStages(response.data);
+      } catch (error) {
+        console.error('Error fetching stages:', error);
+        toast.error('Failed to fetch stages.');
+      }
+    };
+
+    fetchStages();
+  }, [projectId]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    console.log('Form Data Before Submission:', formData); // Added log
+    if (!formData.stage_id) {
+      toast.warn('Stage selection is required.');
+      return;
+    }
+
+    try {
+      setIsLoading(true);
+      const token = localStorage.getItem('jwtToken');
+
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...formData,
+          project_id: parseInt(projectId, 10), // Ensure project ID is a number
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task created successfully!');
+      setFormData({
+        stage_id: '',
+        task_name: '',
+        description: '',
+        due_date: '',
+        priority: 'Medium',
+      });
+      onTaskCreated(); // Callback to refresh data
+    } catch (error) {
+      console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to create task: ${error.response.data.message || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to create task.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <Form onSubmit={handleSubmit} className="form-section margin-top">
+      <h4>Create a New Task</h4>
+
+      {/* Stage Selection */}
+      <Form.Group controlId="stage_id" className="mb-3">
+        <Form.Label>Stage</Form.Label>
+        <Form.Control
+          as="select"
+          name="stage_id"
+          value={formData.stage_id}
+          onChange={handleChange}
+          required
+        >
+          <option value="" disabled>Select a stage</option>
+          {stages.map((stage) => (
+            <option key={stage.stage_id} value={stage.stage_id}>
+              {stage.stage_name}
+            </option>
+          ))}
+        </Form.Control>
+      </Form.Group>
+
+      {/* Task Name */}
+      <Form.Group controlId="task_name" className="mb-3">
+        <Form.Label>Task Name</Form.Label>
+        <Form.Control
+          type="text"
+          name="task_name"
+          value={formData.task_name}
+          onChange={handleChange}
+          placeholder="Enter task name"
+          required
+        />
+      </Form.Group>
+
+      {/* Description */}
+      <Form.Group controlId="description" className="mb-3">
+        <Form.Label>Description</Form.Label>
+        <Form.Control
+          type="text"
+          name="description"
+          value={formData.description}
+          onChange={handleChange}
+          placeholder="Enter description (optional)"
+        />
+      </Form.Group>
+
+      {/* Due Date */}
+      <Form.Group controlId="due_date" className="mb-3">
+        <Form.Label>Due Date</Form.Label>
+        <Form.Control
+          type="date"
+          name="due_date"
+          value={formData.due_date}
+          onChange={handleChange}
+        />
+      </Form.Group>
+
+      {/* Priority */}
+      <Form.Group controlId="priority" className="mb-3">
+        <Form.Label>Priority</Form.Label>
+        <Form.Control
+          as="select"
+          name="priority"
+          value={formData.priority}
+          onChange={handleChange}
+        >
+          <option>Low</option>
+          <option>Medium</option>
+          <option>High</option>
+        </Form.Control>
+      </Form.Group>
+
+      {/* Form Actions */}
+      <div className="d-flex justify-content-end">
+        <Button variant="secondary" onClick={onCancel} className="me-2">
+          Cancel
+        </Button>
+        <Button variant="primary" type="submit" disabled={isLoading}>
+          {isLoading ? (
+            <>
+              <Spinner
+                as="span"
+                animation="border"
+                size="sm"
+                role="status"
+                aria-hidden="true"
+              /> Creating...
+            </>
+          ) : (
+            'Create Task'
+          )}
+        </Button>
+      </div>
+    </Form>
+  );
+};
+
+export default CreateTaskForm;
+
+--- frontend/src/components/TaskForm.js ---
+
+// src/components/TaskForm.js
+
+import React, { useState, useEffect } from 'react';
+import { Form, Button, Spinner, Modal } from 'react-bootstrap';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+
+function TaskForm({
+  mode,
+  taskData,
+  onSubmit,
+  onCancel,
+  stages,
+  initialStageId,
+  projectId,
+  isModal = true, // Control rendering mode
+}) {
+  const [formData, setFormData] = useState({
+    task_name: taskData ? taskData.task_name : '',
+    description: taskData ? taskData.description : '',
+    due_date: taskData ? taskData.due_date : '',
+    priority: taskData ? taskData.priority : 'Medium', // Default priority
+    is_completed: taskData ? taskData.is_completed : false,
+    stage_id: initialStageId !== null ? initialStageId : '', // Ensure it's a number or empty string
+  });
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    console.log(`TaskForm: Mode = ${mode}`);
+    console.log(`TaskForm: Initial Stage ID = ${initialStageId}`);
+    console.log(`TaskForm: Project ID = ${projectId}`);
+    console.log('TaskForm: Received stages prop:', stages);
+  }, [mode, initialStageId, projectId, stages]);
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    console.log(`TaskForm: Raw input - name: ${name}, value: ${value}, type: ${type}, checked: ${checked}`);
+    
+    const newValue =
+      type === 'checkbox'
+        ? checked
+        : name === 'stage_id'
+        ? Number(value) // Convert to number
+        : value;
+    
+    console.log(`TaskForm: Converted value - name: ${name}, newValue: ${newValue}`);
+    
+    setFormData((prev) => ({
+      ...prev,
+      [name]: newValue,
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    console.log('TaskForm: Submitting form with data:', formData);
+    setIsSubmitting(true);
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to perform this action.');
+        onCancel(); // Optionally, navigate to login
+        return;
+      }
+
+      if (mode === 'edit') {
+        if (!taskData || !taskData.task_id) {
+          toast.error('Invalid task data.');
+          setIsSubmitting(false);
+          return;
+        }
+        console.log(`TaskForm: Editing task with ID = ${taskData.task_id}`);
+        console.log('TaskForm: Form Data for PUT:', formData);
+
+        await axios.put(
+          `${process.env.REACT_APP_API_URL}/tasks/${taskData.task_id}`, // Include task_id
+          formData,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        toast.success('Task updated successfully!');
+      } else {
+        // Create mode
+        if (!projectId) {
+          toast.error('Project ID is missing.');
+          setIsSubmitting(false);
+          return;
+        }
+        console.log('TaskForm: Creating task with data:', {
+          ...formData,
+          project_id: parseInt(projectId, 10),
+        });
+
+        await axios.post(
+          `${process.env.REACT_APP_API_URL}/tasks`,
+          {
+            ...formData,
+            project_id: parseInt(projectId, 10), // Ensure project ID is a number
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        toast.success('Task created successfully!');
+      }
+      onSubmit(formData);
+    } catch (error) {
+      console.error('Error submitting task:', error);
+      if (error.response) {
+        toast.error(`Failed to ${mode === 'edit' ? 'update' : 'create'} task: ${error.response.data.error || 'Unknown error.'}`);
+      } else {
+        toast.error(`Failed to ${mode === 'edit' ? 'update' : 'create'} task.`);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Form content
+  const formContent = (
+    <Form onSubmit={handleSubmit}>
+      <Form.Group controlId="taskName" className="mb-3">
+        <Form.Label>Task Name</Form.Label>
+        <Form.Control
+          type="text"
+          name="task_name"
+          value={formData.task_name}
+          onChange={handleChange}
+          required
+        />
+      </Form.Group>
+
+      <Form.Group controlId="description" className="mb-3">
+        <Form.Label>Description</Form.Label>
+        <Form.Control
+          as="textarea"
+          name="description"
+          value={formData.description}
+          onChange={handleChange}
+          rows={3}
+        />
+      </Form.Group>
+
+      <Form.Group controlId="dueDate" className="mb-3">
+        <Form.Label>Due Date</Form.Label>
+        <Form.Control
+          type="date"
+          name="due_date"
+          value={formData.due_date}
+          onChange={handleChange}
+        />
+      </Form.Group>
+
+      <Form.Group controlId="priority" className="mb-3">
+        <Form.Label>Priority</Form.Label>
+        <Form.Select
+          name="priority"
+          value={formData.priority}
+          onChange={handleChange}
+        >
+          <option value="Low">Low</option>
+          <option value="Medium">Medium</option>
+          <option value="High">High</option>
+        </Form.Select>
+      </Form.Group>
+
+      <Form.Group controlId="isCompleted" className="mb-3">
+        <Form.Check
+          type="checkbox"
+          label="Completed"
+          name="is_completed"
+          checked={formData.is_completed}
+          onChange={handleChange}
+        />
+      </Form.Group>
+
+      <Form.Group controlId="stageId" className="mb-3">
+        <Form.Label>Stage</Form.Label>
+        <Form.Select
+          name="stage_id"
+          value={formData.stage_id}
+          onChange={handleChange}
+          required
+        >
+          <option value="">Select Stage</option>
+          {stages.map((stage) => (
+            <option key={stage.stage_id} value={stage.stage_id}>
+              {stage.stage_name}
+            </option>
+          ))}
+        </Form.Select>
+      </Form.Group>
+
+      <div className="d-flex justify-content-end">
+        <Button variant="secondary" onClick={onCancel} className="me-2">
+          Cancel
+        </Button>
+        <Button variant="primary" type="submit" disabled={isSubmitting}>
+          {isSubmitting ? (
+            <>
+              <Spinner
+                as="span"
+                animation="border"
+                size="sm"
+                role="status"
+                aria-hidden="true"
+                className="me-2"
+              />
+              Saving...
+            </>
+          ) : (
+            'Save'
+          )}
+        </Button>
+      </div>
+    </Form>
+  );
+
+  // Render form either inside a modal or as a standalone component
+  if (isModal) {
+    return (
+      <Modal show onHide={onCancel}>
+        <Modal.Header closeButton>
+          <Modal.Title>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>{formContent}</Modal.Body>
+      </Modal>
+    );
+  }
+
+  return (
+    <div className="task-form-page">
+      <h2>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</h2>
+      {formContent}
+    </div>
+  );
+}
+
+export default TaskForm;
+
+--- frontend/src/components/Header.js ---
+
+// src/components/Header.js
+
+import React, { useContext } from 'react';
+import { Link } from 'react-router-dom'; // Import Link from react-router-dom
+import { Navbar, Nav, Container, Button } from 'react-bootstrap'; // Import necessary Bootstrap components
+import { AuthContext } from '../context/AuthContext';
+
+function Header() {
+  const { isAuthenticated, logout } = useContext(AuthContext);
+
+  const handleLogout = () => {
+    logout();
+    localStorage.removeItem('jwtToken');
+    window.location.href = '/login';
+  };
+
+  return (
+    <Navbar bg="light" expand="lg" className="mb-4">
+      <Container>
+        <Navbar.Brand as={Link} to="/">
+          YourAppName
+        </Navbar.Brand>
+        <Navbar.Toggle aria-controls="basic-navbar-nav" />
+        <Navbar.Collapse id="basic-navbar-nav">
+          <Nav className="ms-auto">
+            {!isAuthenticated ? (
+              <>
+                <Nav.Link as={Link} to="/register">Register</Nav.Link>
+                <Nav.Link as={Link} to="/login">Login</Nav.Link>
+              </>
+            ) : (
+              <>
+                <Nav.Link as={Link} to="/dashboard">Dashboard</Nav.Link>
+                <Nav.Link as={Link} to="/profile">Profile</Nav.Link>
+                <Nav.Link as={Link} to="/projects">Projects</Nav.Link>
+                <Button variant="outline-secondary" onClick={handleLogout} className="ms-2">
+                  Logout
+                </Button>
+              </>
+            )}
+          </Nav>
+        </Navbar.Collapse>
+      </Container>
+    </Navbar>
+  );
+}
+
+export default Header;
+
+--- frontend/src/components/StagesSection.js ---
+
+// src/components/StagesSection.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import TaskForm from './TaskForm';
+import { Table, Button, Form, Modal } from 'react-bootstrap';
+import { useNavigate } from 'react-router-dom'; // Import useNavigate
+
+function StagesSection({ projectId, stages, refetchProject }) {
+  const [currentStage, setCurrentStage] = useState(null);
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState(null);
+
+  const navigate = useNavigate(); // Initialize useNavigate
+
+  // Handle task creation
+  const handleCreateTask = async (taskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      console.log('Creating task with data:', taskData);
+
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...taskData,
+          project_id: parseInt(projectId, 10), // Dynamic project ID
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      console.log('Task created:', response.data);
+      toast.success('Task created successfully!');
+      setShowTaskForm(false);
+      setCurrentStage(null);
+      refetchProject();
+    } catch (error) {
+      console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to create task: ${error.response.data.message || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to create task.');
+      }
+    }
+  };
+
+  // Handle task editing by navigating to EditTaskPage
+  const handleEditTaskRedirect = (task) => {
+    navigate(`/projects/${projectId}/tasks/${task.task_id}/edit`);
+  };
+
+  // Handle task deletion
+  const handleDeleteTask = async () => {
+    const token = localStorage.getItem('jwtToken');
+    try {
+      await axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskToDelete.task_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Task deleted successfully!');
+      setShowDeleteModal(false);
+      setTaskToDelete(null);
+      refetchProject();
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      toast.error('Failed to delete task.');
+    }
+  };
+
+  // Handle bulk task deletion
+  const handleDeleteSelectedTasks = async () => {
+    const token = localStorage.getItem('jwtToken');
+    if (selectedTaskIds.length === 0) {
+      toast.warn('No tasks selected.');
+      return;
+    }
+    if (window.confirm('Are you sure you want to delete selected tasks?')) {
+      try {
+        await Promise.all(
+          selectedTaskIds.map((taskId) =>
+            axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
+              headers: { Authorization: `Bearer ${token}` },
+            })
+          )
+        );
+        toast.success('Selected tasks deleted successfully!');
+        setSelectedTaskIds([]);
+        refetchProject();
+      } catch (error) {
+        console.error('Error deleting tasks:', error);
+        toast.error('Failed to delete selected tasks.');
+      }
+    }
+  };
+
+  // Handle task checkbox selection
+  const handleTaskCheckboxChange = (taskId, checked) => {
+    setSelectedTaskIds((prev) => {
+      if (checked) return [...prev, taskId];
+      return prev.filter((id) => id !== taskId);
+    });
+  };
+
+  return (
+    <div className="stages-section section">
+      <h2>Stages &amp; Tasks</h2>
+      {stages.length > 0 ? (
+        stages
+          .sort((a, b) => a.stage_order - b.stage_order)
+          .map((stage) => (
+            <div key={stage.stage_id} className="stage-container mb-4">
+              <h3>{stage.stage_name}</h3>
+
+              {/* Display Existing Tasks */}
+              {stage.tasks && stage.tasks.length > 0 ? (
+                <div className="table-responsive">
+                  <Table striped bordered hover>
+                    <thead>
+                      <tr>
+                        <th>
+                          <Form.Check
+                            type="checkbox"
+                            checked={
+                              stage.tasks.every(task => selectedTaskIds.includes(task.task_id)) && stage.tasks.length > 0
+                            }
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              const taskIds = stage.tasks.map(task => task.task_id);
+                              setSelectedTaskIds(prev => {
+                                if (checked) {
+                                  return [...new Set([...prev, ...taskIds])];
+                                } else {
+                                  return prev.filter(id => !taskIds.includes(id));
+                                }
+                              });
+                            }}
+                          />
+                        </th>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Due Date</th>
+                        <th>Priority</th>
+                        <th>Completed</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stage.tasks.map((task) => (
+                        <tr key={task.task_id}>
+                          <td>
+                            <Form.Check
+                              type="checkbox"
+                              checked={selectedTaskIds.includes(task.task_id)}
+                              onChange={(e) =>
+                                handleTaskCheckboxChange(task.task_id, e.target.checked)
+                              }
+                            />
+                          </td>
+                          <td>{task.task_name}</td>
+                          <td>{task.description || '-'}</td>
+                          <td>{task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'}</td>
+                          <td>
+                            <span className={`badge bg-${task.priority ? task.priority.toLowerCase() : 'secondary'}`}>
+                              {task.priority || 'N/A'}
+                            </span>
+                          </td>
+                          <td>
+                            {task.is_completed ? (
+                              <span className="badge bg-success">Yes</span>
+                            ) : (
+                              <span className="badge bg-secondary">No</span>
+                            )}
+                          </td>
+                          <td>
+                            <Button
+                              variant="outline-primary"
+                              size="sm"
+                              className="me-2"
+                              onClick={() => handleEditTaskRedirect(task)}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              variant="outline-danger"
+                              size="sm"
+                              onClick={() => {
+                                setTaskToDelete(task);
+                                setShowDeleteModal(true);
+                              }}
+                            >
+                              Delete
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </div>
+              ) : (
+                <p>No tasks in this stage.</p>
+              )}
+
+              {/* Add Task Button */}
+              <Button
+                variant="success"
+                onClick={() => {
+                  console.log('StagesSection: Selected stage_id:', stage.stage_id);
+                  setCurrentStage(stage);
+                  setShowTaskForm(true);
+                }}
+              >
+                Add Task
+              </Button>
+            </div>
+          ))
+      ) : (
+        <p>No stages found.</p>
+      )}
+
+      {/* Task Form for Create */}
+      {showTaskForm && currentStage && (
+        <TaskForm
+          key={`create-${currentStage.stage_id}-${Date.now()}`} // Ensure unique key
+          mode="create"
+          taskData={null}
+          onSubmit={handleCreateTask}
+          onCancel={() => {
+            setShowTaskForm(false);
+            setCurrentStage(null);
+          }}
+          stages={stages} // Pass stages for dropdown
+          initialStageId={currentStage ? String(currentStage.stage_id) : ''}
+          projectId={projectId} // Pass projectId as prop
+          isModal={true} // Render as modal
+        />
+      )}
+
+      {/* Bulk Delete Button */}
+      {selectedTaskIds.length > 0 && (
+        <div className="d-flex justify-content-end mt-3">
+          <Button variant="danger" onClick={handleDeleteSelectedTasks}>
+            Delete Selected Tasks
+          </Button>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      <Modal show={showDeleteModal} onHide={() => setShowDeleteModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Confirm Task Deletion</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          Are you sure you want to delete the task "{taskToDelete?.task_name}"?
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowDeleteModal(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={handleDeleteTask}>
+            Delete
+          </Button>
+        </Modal.Footer>
+      </Modal>
+    </div>
+  );
+}
+
+export default StagesSection;
+
+--- frontend/src/components/CollaboratorsSection.js ---
+
+// src/components/CollaboratorsSection.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Table, Button, Form, Modal, Spinner } from 'react-bootstrap';
+
+function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }) {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newCollaboratorEmail, setNewCollaboratorEmail] = useState('');
+  const [newCollaboratorRole, setNewCollaboratorRole] = useState('0');
+  const [isAdding, setIsAdding] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [collaboratorToDelete, setCollaboratorToDelete] = useState(null);
+
+  const roleOptions = [
+    { value: '0', label: 'Buyer' },
+    { value: '1', label: 'Seller' },
+    { value: '2', label: 'Buyer Solicitor' },
+    { value: '3', label: 'Seller Solicitor' },
+    { value: '4', label: 'Estate Agent' },
+    { value: '5', label: 'Mortgage Advisor' },
+    { value: '6', label: 'Mortgage Vendor' },
+    { value: '7', label: 'Deposit Gifter' }
+  ];
+
+  const handleAddCollaborator = async (e) => {
+    e.preventDefault();
+    setIsAdding(true);
+    try {
+      const token = localStorage.getItem('jwtToken');
+      await axios.post(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators`, {
+        email: newCollaboratorEmail,
+        role: parseInt(newCollaboratorRole, 10),
+      }, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      toast.success('Collaborator added successfully!');
+      setShowAddForm(false);
+      setNewCollaboratorEmail('');
+      setNewCollaboratorRole('0');
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error adding collaborator:', error);
+      toast.error('Failed to add collaborator.');
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
+  const handleDeleteCollaborator = async () => {
+    const token = localStorage.getItem('jwtToken');
+    try {
+      await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaboratorToDelete.collaborator_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Collaborator removed successfully!');
+      setShowDeleteModal(false);
+      setCollaboratorToDelete(null);
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error removing collaborator:', error);
+      toast.error('Failed to remove collaborator.');
+    }
+  };
+
+  return (
+    <div className="collaborators-section section">
+      <h2>Project Team</h2>
+      {collaborators && collaborators.length > 0 ? (
+        <div className="table-responsive">
+          <Table striped bordered hover>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {collaborators.map((collab) => (
+                <tr key={collab.collaborator_id}>
+                  <td>{collab.user?.email || 'N/A'}</td>
+                  <td>{roleOptions.find((opt) => opt.value === String(collab.role))?.label || 'Member'}</td>
+                  <td>
+                    <Button
+                      variant="outline-danger"
+                      size="sm"
+                      onClick={() => {
+                        setCollaboratorToDelete(collab);
+                        setShowDeleteModal(true);
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </div>
+      ) : (
+        <p>No collaborators found.</p>
+      )}
+
+      <Button variant={showAddForm ? 'secondary' : 'success'} className="mt-3" onClick={() => setShowAddForm(!showAddForm)}>
+        {showAddForm ? 'Cancel' : 'Add Collaborator'}
+      </Button>
+
+      {/* Add Collaborator Form Modal */}
+      <Modal show={showAddForm} onHide={() => setShowAddForm(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Add a New Collaborator</Modal.Title>
+        </Modal.Header>
+        <Form onSubmit={handleAddCollaborator}>
+          <Modal.Body>
+            <Form.Group controlId="email" className="mb-3">
+              <Form.Label>Email:</Form.Label>
+              <Form.Control
+                type="email"
+                value={newCollaboratorEmail}
+                onChange={(e) => setNewCollaboratorEmail(e.target.value)}
+                placeholder="Enter collaborator's email"
+                required
+              />
+            </Form.Group>
+            <Form.Group controlId="role" className="mb-3">
+              <Form.Label>Role:</Form.Label>
+              <Form.Control
+                as="select"
+                value={newCollaboratorRole}
+                onChange={(e) => setNewCollaboratorRole(e.target.value)}
+              >
+                {roleOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </Form.Control>
+            </Form.Group>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setShowAddForm(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={isAdding}>
+              {isAdding ? (
+                <>
+                  <Spinner
+                    as="span"
+                    animation="border"
+                    size="sm"
+                    role="status"
+                    aria-hidden="true"
+                  /> Adding...
+                </>
+              ) : (
+                'Add Collaborator'
+              )}
+            </Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal show={showDeleteModal} onHide={() => setShowDeleteModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Confirm Removal</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          Are you sure you want to remove {collaboratorToDelete?.user?.email || 'this collaborator'}?
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowDeleteModal(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" onClick={handleDeleteCollaborator}>
+            Remove
+          </Button>
+        </Modal.Footer>
+      </Modal>
+    </div>
+  );
+}
+
+export default CollaboratorsSection;
+
+--- frontend/src/components/ProtectedRoute.js ---
+
+// Frontend/src/components/ProtectedRoute.js
+
+import React, { useContext } from 'react';
+import { Navigate } from 'react-router-dom';
+import { AuthContext } from '../context/AuthContext'; // Corrected path
+
+const ProtectedRoute = ({ children }) => {
+  const { isAuthenticated } = useContext(AuthContext);
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+};
+
+export default ProtectedRoute;
+
+--- frontend/src/pages/Profile.js ---
+
+// src/pages/Profile.js
+
+import React, { useContext, useState, useEffect } from 'react';
+import { UserContext } from '../context/UserContext';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Profile() {
+  const { user, setUser, loading } = useContext(UserContext);
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    first_name: '',
+    last_name: '',
+  });
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [error, setError] = useState(null);
+
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading) {
+      const token = localStorage.getItem('jwtToken');
+      if (!user) {
+        if (!token) {
+          toast.warn('You must be logged in to access the profile.');
+          navigate('/login');
+        }
+      } else {
+        setFormData({
+          username: user.username || '',
+          email: user.email || '',
+          first_name: user.first_name || '',
+          last_name: user.last_name || '',
+        });
+      }
+    }
+  }, [user, loading, navigate]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prevData) => ({ ...prevData, [name]: value }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setIsUpdating(true);
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('No token found. Please log in again.');
+      return navigate('/login');
+    }
+
+    try {
+      const userId = user?.user_id;
+      const response = await axios.put(
+        `${process.env.REACT_APP_API_URL}/users/${userId}`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const updatedUser = response.data.user || response.data;
+      setUser(updatedUser);
+
+      toast.success('Profile updated successfully!');
+    } catch (err) {
+      console.error('Error updating profile:', err.response?.data || err.message);
+      const errorMessage = err.response?.data?.error || 'Failed to update profile. Please try again.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <div className="container mt-5 text-center">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading...</span>
+          </Spinner>
+          <p className="mt-3">Loading your profile...</p>
+        </div>
+      </>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  return (
+    <>
+      <Header />
+      <div className="container mt-5">
+        <div className="section">
+          <h1>Your Profile</h1>
+          <Form onSubmit={handleSubmit} className="mt-4">
+            {error && <Alert variant="danger">{error}</Alert>}
+
+            <Form.Group controlId="username" className="mb-3">
+              <Form.Label>Username:</Form.Label>
+              <Form.Control
+                type="text"
+                name="username"
+                value={formData.username}
+                onChange={handleChange}
+                placeholder="Enter your username"
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="email" className="mb-3">
+              <Form.Label>Email:</Form.Label>
+              <Form.Control
+                type="email"
+                name="email"
+                value={formData.email}
+                onChange={handleChange}
+                placeholder="Enter your email"
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="first_name" className="mb-3">
+              <Form.Label>First Name:</Form.Label>
+              <Form.Control
+                type="text"
+                name="first_name"
+                value={formData.first_name}
+                onChange={handleChange}
+                placeholder="Enter your first name"
+              />
+            </Form.Group>
+
+            <Form.Group controlId="last_name" className="mb-3">
+              <Form.Label>Last Name:</Form.Label>
+              <Form.Control
+                type="text"
+                name="last_name"
+                value={formData.last_name}
+                onChange={handleChange}
+                placeholder="Enter your last name"
+              />
+            </Form.Group>
+
+            <div className="d-flex justify-content-end">
+              <Button variant="secondary" onClick={() => navigate('/dashboard')} className="me-2">
+                Back to Dashboard
+              </Button>
+              <Button variant="primary" type="submit" disabled={isUpdating}>
+                {isUpdating ? (
+                  <>
+                    <Spinner
+                      as="span"
+                      animation="border"
+                      size="sm"
+                      role="status"
+                      aria-hidden="true"
+                    /> Saving...
+                  </>
+                ) : (
+                  'Save Changes'
+                )}
+              </Button>
+            </div>
+          </Form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export default Profile;
+
+--- frontend/src/pages/Register.js ---
+
+// src/pages/Register.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Register() {
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    first_name: '',
+    last_name: '',
+  });
+
+  const [error, setError] = useState(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const navigate = useNavigate();
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null); // Reset error state
+    setIsRegistering(true);
+
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/users/create`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const { token } = response.data; // Extract token from response
+      localStorage.setItem('jwtToken', token); // Store JWT in localStorage
+
+      toast.success('Registration successful!');
+      navigate('/dashboard'); // Redirect to dashboard after successful registration
+    } catch (err) {
+      console.error('Registration error details:', err.response?.data || err.message);
+      const errorMessage = err.response?.data?.error || 'Something went wrong. Please try again.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
+  return (
+    <>
+      <Header />
+      <div className="container mt-5">
+        <div className="section">
+          <h1>Register</h1>
+          <Form onSubmit={handleSubmit} className="mt-4">
+            {error && <Alert variant="danger">{error}</Alert>}
+
+            <Form.Group controlId="username" className="mb-3">
+              <Form.Label>Username:</Form.Label>
+              <Form.Control
+                type="text"
+                name="username"
+                value={formData.username}
+                onChange={handleChange}
+                placeholder="Enter your username"
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="email" className="mb-3">
+              <Form.Label>Email:</Form.Label>
+              <Form.Control
+                type="email"
+                name="email"
+                value={formData.email}
+                onChange={handleChange}
+                placeholder="Enter your email"
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="password" className="mb-3">
+              <Form.Label>Password:</Form.Label>
+              <Form.Control
+                type="password"
+                name="password"
+                value={formData.password}
+                onChange={handleChange}
+                placeholder="Enter your password"
+                required
+              />
+            </Form.Group>
+
+            <Form.Group controlId="first_name" className="mb-3">
+              <Form.Label>First Name:</Form.Label>
+              <Form.Control
+                type="text"
+                name="first_name"
+                value={formData.first_name}
+                onChange={handleChange}
+                placeholder="Enter your first name"
+              />
+            </Form.Group>
+
+            <Form.Group controlId="last_name" className="mb-3">
+              <Form.Label>Last Name:</Form.Label>
+              <Form.Control
+                type="text"
+                name="last_name"
+                value={formData.last_name}
+                onChange={handleChange}
+                placeholder="Enter your last name"
+              />
+            </Form.Group>
+
+            <div className="d-flex justify-content-end">
+              <Button variant="primary" type="submit" disabled={isRegistering}>
+                {isRegistering ? (
+                  <>
+                    <Spinner
+                      as="span"
+                      animation="border"
+                      size="sm"
+                      role="status"
+                      aria-hidden="true"
+                    /> Registering...
+                  </>
+                ) : (
+                  'Register'
+                )}
+              </Button>
+            </div>
+          </Form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export default Register;
+
+--- frontend/src/pages/ProjectDetails.js ---
+
+// src/pages/ProjectDetails.js
+
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Container, Row, Col, Spinner, Button, Card, Alert } from 'react-bootstrap'; // Imported Alert
+import CollaboratorsSection from '../components/CollaboratorsSection';
+import StagesSection from '../components/StagesSection';
+import Header from '../components/Header';
+
+function ProjectDetails() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const [project, setProject] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [collaborators, setCollaborators] = useState([]);
+
+  // Define fetchProjectDetails outside of useEffect
+  const fetchProjectDetails = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      console.log('Project Data:', response.data); // Verify stages structure
+      setProject(response.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error fetching project:', error);
+      toast.error('Failed to fetch project.');
+      setLoading(false);
+    }
+  };
+
+  // Define fetchCollaborators outside of useEffect
+  const fetchCollaborators = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}/collaborators`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setCollaborators(response.data);
+    } catch (error) {
+      console.error('Error fetching collaborators:', error);
+      toast.error('Failed to fetch collaborators.');
+    }
+  };
+
+  // Define refetchProject to call both fetch functions
+  const refetchProject = () => {
+    fetchProjectDetails();
+    fetchCollaborators();
+  };
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to view this project.');
+      navigate('/login');
+      return;
+    }
+    fetchProjectDetails();
+    fetchCollaborators();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, navigate]);
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading project details...</span>
+          </Spinner>
+          <p className="mt-3">Loading project details...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (!project) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5">
+          <Alert variant="danger">
+            Project not found or you do not have access.
+          </Alert>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        {/* Project Details */}
+        <Card className="mb-4">
+          <Card.Body>
+            <Card.Title>{project.project_name}</Card.Title>
+            <Card.Text>{project.description}</Card.Text>
+            <Button variant="primary" onClick={() => navigate(`/projects/${id}/edit`)}>
+              Edit Project
+            </Button>
+          </Card.Body>
+        </Card>
+
+        {/* Collaborators Section */}
+        <CollaboratorsSection
+          projectId={id}
+          collaborators={collaborators}
+          refetchCollaborators={fetchCollaborators}
+        />
+
+        {/* Stages and Tasks Section */}
+        <StagesSection
+          projectId={id}
+          stages={project.stages}
+          refetchProject={refetchProject}
+        />
+      </Container>
+    </>
+  );
+}
+
+export default ProjectDetails;
+
+--- frontend/src/pages/Projects.js ---
+
+// src/pages/Projects.js
+
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Link, useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { Container, Button, Spinner, Card, Row, Col } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Projects() {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to view projects.');
+      navigate('/login');
+      return;
+    }
+
+    axios.get(`${process.env.REACT_APP_API_URL}/projects/user`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        setProjects(response.data);
+        setLoading(false);
+      })
+      .catch((error) => {
+        console.error('Error fetching projects:', error);
+        toast.error('Failed to fetch projects');
+        setLoading(false);
+      });
+  }, [navigate]);
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading projects...</span>
+          </Spinner>
+          <p className="mt-3">Loading projects...</p>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <div className="d-flex justify-content-between align-items-center mb-4">
+          <h1>Your Projects</h1>
+          <Button variant="success" onClick={() => navigate('/projects/create')}>
+            Create New Project
+          </Button>
+        </div>
+        {projects.length === 0 ? (
+          <p>No projects found.</p>
+        ) : (
+          <Row xs={1} md={2} lg={3} className="g-4">
+            {projects.map((proj) => (
+              <Col key={proj.project_id}>
+                <Card>
+                  <Card.Body>
+                    <Card.Title>{proj.project_name}</Card.Title>
+                    <Card.Text>{proj.description}</Card.Text>
+                    <Button as={Link} to={`/projects/${proj.project_id}`} variant="primary">
+                      View Details
+                    </Button>
+                  </Card.Body>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        )}
+      </Container>
+    </>
+  );
+}
+
+export default Projects;
+
+--- frontend/src/pages/Login.js ---
+
+import React, { useState, useContext } from 'react';
+import { useNavigate, Navigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert, Container, Row, Col } from 'react-bootstrap';
+import { AuthContext } from '../context/AuthContext';
+import Header from '../components/Header';
+
+function Login() {
+  const { isAuthenticated, login } = useContext(AuthContext);
+  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [error, setError] = useState(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const navigate = useNavigate();
+
+  if (isAuthenticated) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setIsLoggingIn(true);
+
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/auth/login`,
+        formData,
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+
+      const { token } = response.data;
+      login(token);
+      toast.success('Login successful!');
+      navigate('/dashboard');
+    } catch (err) {
+      console.error('Login error:', err.response?.data || err.message);
+      const errorMessage = err.response?.data?.error || 'Invalid login credentials';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={6}>
+            <div className="form-section">
+              <h2 className="text-center mb-4">Login</h2>
+              <Form onSubmit={handleSubmit}>
+                {error && <Alert variant="danger">{error}</Alert>}
+                <Form.Group controlId="email" className="mb-3">
+                  <Form.Label>Email:</Form.Label>
+                  <Form.Control
+                    type="email"
+                    name="email"
+                    value={formData.email}
+                    onChange={handleChange}
+                    placeholder="Enter your email"
+                    required
+                  />
+                </Form.Group>
+                <Form.Group controlId="password" className="mb-4">
+                  <Form.Label>Password:</Form.Label>
+                  <Form.Control
+                    type="password"
+                    name="password"
+                    value={formData.password}
+                    onChange={handleChange}
+                    placeholder="Enter your password"
+                    required
+                  />
+                </Form.Group>
+                <div className="d-flex justify-content-end">
+                  <Button variant="primary" type="submit" disabled={isLoggingIn}>
+                    {isLoggingIn ? (
+                      <>
+                        <Spinner
+                          as="span"
+                          animation="border"
+                          size="sm"
+                          role="status"
+                          aria-hidden="true"
+                        /> Logging in...
+                      </>
+                    ) : (
+                      'Login'
+                    )}
+                  </Button>
+                </div>
+              </Form>
+            </div>
+          </Col>
+        </Row>
+      </Container>
+    </>
+  );
+}
+
+export default Login;
+
+--- frontend/src/pages/CreateProject.js ---
+
+// src/pages/CreateProject.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert, Container, Row, Col } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function CreateProject() {
+  const [projectName, setProjectName] = useState('');
+  const [description, setDescription] = useState('');
+  const [userRole, setUserRole] = useState('0'); // 0 = Buyer, 1 = Seller
+  const [error, setError] = useState(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null); // Reset error state
+    setIsCreating(true);
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to create a project.');
+      return navigate('/login');
+    }
+
+    const parsedRole = parseInt(userRole, 10);
+
+    try {
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/projects/create`,
+        {
+          project_name: projectName,
+          description,
+          user_role: parsedRole,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Project created successfully!');
+      navigate('/projects');
+    } catch (error) {
+      console.error('Error creating project:', error);
+      const errorMessage = error.response?.data?.error || 'Failed to create project.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={8}>
+            <div className="form-section">
+              <h1>Create a New Project</h1>
+              <Form onSubmit={handleSubmit} className="mt-4">
+                {error && <Alert variant="danger">{error}</Alert>}
+
+                <Form.Group controlId="projectName" className="mb-3">
+                  <Form.Label>Project Name:</Form.Label>
+                  <Form.Control
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="Enter the project name"
+                    required
+                  />
+                </Form.Group>
+
+                <Form.Group controlId="description" className="mb-3">
+                  <Form.Label>Description (optional):</Form.Label>
+                  <Form.Control
+                    as="textarea"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Enter a brief description"
+                  />
+                </Form.Group>
+
+                <h3>Are you Buying or Selling a house?</h3>
+                <Form.Group className="mb-3">
+                  <Form.Check
+                    type="radio"
+                    label="I am Buying (Role = Buyer)"
+                    name="user_role"
+                    value="0"
+                    checked={userRole === '0'}
+                    onChange={(e) => setUserRole(e.target.value)}
+                  />
+                  <Form.Check
+                    type="radio"
+                    label="I am Selling (Role = Seller)"
+                    name="user_role"
+                    value="1"
+                    checked={userRole === '1'}
+                    onChange={(e) => setUserRole(e.target.value)}
+                  />
+                </Form.Group>
+
+                <div className="d-flex justify-content-end">
+                  <Button variant="secondary" onClick={() => navigate('/projects')} className="me-2">
+                    Cancel
+                  </Button>
+                  <Button variant="primary" type="submit" disabled={isCreating}>
+                    {isCreating ? (
+                      <>
+                        <Spinner
+                          as="span"
+                          animation="border"
+                          size="sm"
+                          role="status"
+                          aria-hidden="true"
+                        /> Creating...
+                      </>
+                    ) : (
+                      'Create'
+                    )}
+                  </Button>
+                </div>
+              </Form>
+            </div>
+          </Col>
+        </Row>
+      </Container>
+    </>
+  );
+}
+
+export default CreateProject;
+
+--- frontend/src/pages/EditTaskPage.js ---
+
+// src/pages/EditTaskPage.js
+
+import React, { useEffect, useState } from 'react';
+import TaskForm from '../components/TaskForm';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Container, Spinner, Alert } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function EditTaskPage() {
+  const { projectId, taskId } = useParams();
+  const navigate = useNavigate();
+
+  const [stages, setStages] = useState([]);
+  const [taskData, setTaskData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Fetch stages and task data
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        if (!token) {
+          toast.warn('You must be logged in to edit a task.');
+          navigate('/login');
+          return;
+        }
+
+        // Fetch stages
+        const stagesResponse = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        console.log('Fetched stages:', stagesResponse.data);
+        setStages(stagesResponse.data);
+
+        // Fetch task data
+        const taskResponse = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        console.log('Fetched task data:', taskResponse.data);
+        setTaskData(taskResponse.data);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        toast.error('Failed to fetch task or stages.');
+        navigate(`/projects/${projectId}`);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (projectId && taskId) {
+      fetchData();
+    } else {
+      toast.error('Invalid project or task ID.');
+      navigate('/projects');
+    }
+  }, [projectId, taskId, navigate]);
+
+  // Handle form submission
+  const handleEditTask = async (updatedTaskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to edit a task.');
+        navigate('/login');
+        return;
+      }
+
+      console.log('Updating task with data:', {
+        ...updatedTaskData,
+        project_id: parseInt(projectId, 10),
+      });
+
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/tasks/${taskId}`,
+        {
+          ...updatedTaskData,
+          project_id: parseInt(projectId, 10), // Ensure project ID is a number
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task updated successfully!');
+      navigate(`/projects/${projectId}`); // Redirect to project details page after editing
+    } catch (error) {
+      console.error('Error editing task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to update task: ${error.response.data.error || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to update task.');
+      }
+    }
+  };
+
+  // Handle cancel action
+  const handleCancel = () => {
+    navigate(`/projects/${projectId}`); // Redirect back to project details on cancel
+  };
+
+  if (isLoading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading task data...</span>
+          </Spinner>
+          <p className="mt-3">Loading task data...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (!taskData) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5">
+          <Alert variant="danger">
+            Task not found or you do not have access.
+          </Alert>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <h1>Edit Task</h1>
+        <TaskForm
+          mode="edit"
+          taskData={taskData}
+          onSubmit={handleEditTask}
+          onCancel={handleCancel}
+          stages={stages}
+          initialStageId={String(taskData.stage_id)} // Preselect the task's current stage
+          projectId={projectId} // Pass projectId as prop
+          isModal={false} // Render as standalone form
+        />
+      </Container>
+    </>
+  );
+}
+
+export default EditTaskPage;
+
+--- frontend/src/pages/CreateTaskPage.js ---
+
+// src/pages/CreateTaskPage.js
+
+import React, { useEffect, useState } from 'react';
+import TaskForm from '../components/TaskForm';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Container, Spinner, Button } from 'react-bootstrap';
+import Header from '../components/Header';
+
+const CreateTaskPage = () => {
+  const { id: projectId } = useParams(); // Dynamic project ID from route
+  const [stages, setStages] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [initialStageId, setInitialStageId] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!projectId) {
+      toast.error('Invalid project ID.');
+      navigate('/projects');
+      return;
+    }
+
+    const fetchStages = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        if (!token) {
+          toast.warn('You must be logged in to create a task.');
+          navigate('/login');
+          return;
+        }
+
+        const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        console.log('Fetched stages:', response.data);
+        setStages(response.data);
+        if (response.data.length > 0) {
+          setInitialStageId(String(response.data[0].stage_id)); // Preselect the first stage
+        }
+      } catch (error) {
+        console.error('Error fetching stages:', error);
+        toast.error('Failed to fetch stages.');
+        // Optionally, redirect back to the project page or handle the error as needed
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchStages();
+  }, [projectId, navigate]);
+
+  const handleCreateTask = async (taskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to create a task.');
+        navigate('/login');
+        return;
+      }
+
+      console.log('Creating task with data:', taskData);
+
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...taskData,
+          project_id: parseInt(projectId, 10), // Ensure project ID is a number
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task created successfully!');
+      navigate(`/projects/${projectId}`); // Redirect to project details page after creation
+    } catch (error) {
+      console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        // Adjust the error message based on your backend's response structure
+        toast.error(`Failed to create task: ${error.response.data.error || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to create task.');
+      }
+    }
+  };
+
+  const handleCancel = () => {
+    navigate(`/projects/${projectId}`); // Redirect back to project details on cancel
+  };
+
+  if (isLoading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading stages...</span>
+          </Spinner>
+          <p className="mt-3">Loading stages...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (stages.length === 0) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5 text-center">
+          <h2>No stages available.</h2>
+          <p>Please add stages to create tasks.</p>
+          <Button variant="primary" onClick={() => navigate(`/projects/${projectId}/add-stage`)}>
+            Add Stage
+          </Button>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <h1>Create New Task</h1>
+        <TaskForm
+          key={initialStageId ? `create-${initialStageId}` : `create-new-${Date.now()}`} // Ensure unique key
+          mode="create"
+          onSubmit={handleCreateTask}
+          onCancel={handleCancel}
+          stages={stages}
+          initialStageId={initialStageId} // Preselect the first stage
+          projectId={projectId} // Pass projectId as prop
+        />
+      </Container>
+    </>
+  );
+};
+
+export default CreateTaskPage;
+
+--- frontend/src/pages/Dashboard.js ---
+
+// src/pages/Dashboard.js
+
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Container, Row, Col, Card, Button, Spinner } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Dashboard() {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  const fetchProjects = async () => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to access the dashboard.');
+      navigate('/login');
+      return;
+    }
+
+    try {
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/user`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setProjects(response.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+      toast.error('Failed to fetch projects.');
+      setLoading(false);
+    }
+  };
+
+  const deleteProject = async (projectId) => {
+    const token = localStorage.getItem('jwtToken');
+    if (window.confirm('Are you sure you want to delete this project?')) {
+      try {
+        await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        toast.success('Project deleted successfully!');
+        fetchProjects(); // Refresh the project list after deletion
+      } catch (error) {
+        console.error('Error deleting project:', error);
+        toast.error('Failed to delete project.');
+      }
+    }
+  };
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading your dashboard...</span>
+          </Spinner>
+          <p className="mt-3">Loading your dashboard...</p>
+        </Container>
+      </>
+    );
+  }
+
+  const openProjects = projects.filter((p) => p.status === 'active');
+  const completedProjects = projects.filter((p) => p.status === 'completed');
+
+  const roleMapping = [
+    { value: 0, label: 'Buyer' },
+    { value: 1, label: 'Seller' },
+    { value: 2, label: 'Buyer Solicitor' },
+    { value: 3, label: 'Seller Solicitor' },
+    { value: 4, label: 'Estate Agent' },
+    { value: 5, label: 'Mortgage Advisor' },
+    { value: 6, label: 'Mortgage Vendor' },
+    { value: 7, label: 'Deposit Gifter' },
+  ];
+
+  const renderProject = (proj) => (
+    <Col key={proj.project_id} xs={12} md={6} lg={4}>
+      <Card className="mb-4">
+        <Card.Body>
+          <Card.Title>{proj.project_name}</Card.Title>
+          <Card.Text>{proj.description}</Card.Text>
+          <Card.Text>
+            <strong>Status:</strong> {proj.status.charAt(0).toUpperCase() + proj.status.slice(1)}
+          </Card.Text>
+          <Card.Text>
+            <strong>Created:</strong> {new Date(proj.created_at).toLocaleString()}
+          </Card.Text>
+          <Card.Text>
+            <strong>Last Updated:</strong> {new Date(proj.updated_at).toLocaleString()}
+          </Card.Text>
+          {proj.collaborators && proj.collaborators.length > 0 && (
+            <div>
+              <strong>Collaborators:</strong>
+              <ul>
+                {proj.collaborators.map((c) => {
+                  const roleObj = roleMapping.find((r) => r.value === c.role);
+                  const roleLabel = roleObj ? roleObj.label : 'Unknown';
+                  return (
+                    <li key={c.user_id}>
+                      {c.user?.email || 'N/A'} - {roleLabel}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+          <div className="d-flex justify-content-between">
+            <Button variant="primary" onClick={() => navigate(`/projects/${proj.project_id}`)}>
+              View Details
+            </Button>
+            <Button variant="danger" onClick={() => deleteProject(proj.project_id)}>
+              Delete
+            </Button>
+          </div>
+        </Card.Body>
+      </Card>
+    </Col>
+  );
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <div className="section">
+          <h1>Welcome to Your Dashboard</h1>
+          <p>Here are your projects:</p>
+
+          <h2>Open Projects</h2>
+          {openProjects.length === 0 ? (
+            <p>No open projects.</p>
+          ) : (
+            <Row>{openProjects.map(renderProject)}</Row>
+          )}
+
+          <h2>Completed Projects</h2>
+          {completedProjects.length === 0 ? (
+            <p>No completed projects.</p>
+          ) : (
+            <Row>{completedProjects.map(renderProject)}</Row>
+          )}
+
+          <div className="d-flex justify-content-center mt-4">
+            <Button variant="success" onClick={() => navigate('/projects/create')}>
+              Create New Project
+            </Button>
+          </div>
+        </div>
+      </Container>
+    </>
+  );
+}
+
+export default Dashboard;
+
+--- frontend/src/context/AuthContext.js ---
+
+// src/contexts/AuthContext.js
+
+import React, { createContext, useState, useEffect } from 'react';
+
+// Create the Auth Context
+export const AuthContext = createContext();
+
+// Auth Provider Component
+export const AuthProvider = ({ children }) => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Check for token in localStorage on mount
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (token) {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  // Login function
+  const login = (token) => {
+    localStorage.setItem('jwtToken', token);
+    setIsAuthenticated(true);
+  };
+
+  // Logout function
+  const logout = () => {
+    localStorage.removeItem('jwtToken');
+    setIsAuthenticated(false);
+  };
+
+  return (
+    <AuthContext.Provider value={{ isAuthenticated, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+--- frontend/src/context/UserContext.js ---
+
+// Frontend/src/context/UserContext.js
+
+import React, { createContext, useState, useEffect } from 'react';
+import axios from 'axios';
+
+export const UserContext = createContext(null);
+
+export function UserProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (token) {
+      axios.get(`${process.env.REACT_APP_API_URL}/users/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((response) => {
+          // Assuming response.data contains the user object
+          console.log('User data from /users/me:', response.data); // Debug log
+          setUser(response.data);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch user:', error);
+          localStorage.removeItem('jwtToken');
+        })
+        .finally(() => setLoading(false));
+    } else {
+      // No token means no user, just stop loading.
+      setLoading(false);
+    }
+  }, []);
+
+  return (
+    <UserContext.Provider value={{ user, setUser, loading }}>
+      {children}
+    </UserContext.Provider>
+  );
+}
+
+--- frontend/src/app.js ---
+
+// src/App.js
+
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Register from './pages/Register';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import Profile from './pages/Profile';
+import Projects from './pages/Projects';
+import CreateProject from './pages/CreateProject';
+import ProjectDetails from './pages/ProjectDetails';
+import CreateTaskPage from './pages/CreateTaskPage'; // Import CreateTaskPage
+import EditTaskPage from './pages/EditTaskPage';     // Import EditTaskPage
+import ProtectedRoute from './components/ProtectedRoute';
+import { UserProvider } from './context/UserContext'; // Ensure this path is correct
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import './styles.css'; // Global styles imported here
+import Header from './components/Header';
+
+function App() {
+  return (
+    <UserProvider>
+      <Router>
+        {/* Header is included in individual pages or can be moved here if consistent across all pages */}
+        <Routes>
+          {/* Public Routes */}
+          <Route path="/register" element={<Register />} />
+          <Route path="/login" element={<Login />} />
+
+          {/* Protected Routes */}
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects"
+            element={
+              <ProtectedRoute>
+                <Projects />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/create"
+            element={
+              <ProtectedRoute>
+                <CreateProject />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/projects/:id"
+            element={
+              <ProtectedRoute>
+                <ProjectDetails />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Task Creation Route */}
+          <Route
+            path="/projects/:id/create-task"
+            element={
+              <ProtectedRoute>
+                <CreateTaskPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Task Editing Route */}
+          <Route
+            path="/projects/:projectId/tasks/:taskId/edit"
+            element={
+              <ProtectedRoute>
+                <EditTaskPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Redirect root to dashboard or login based on authentication */}
+          <Route
+            path="/"
+            element={
+              localStorage.getItem('jwtToken') ? (
+                <Navigate to="/dashboard" replace />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+
+          {/* Fallback Route */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        <ToastContainer position="top-right" autoClose={5000} />
+      </Router>
+    </UserProvider>
+  );
+}
+
+export default App;
+
+--- frontend/src/styles.css ---
+
+/* src/styles.css */
+
+/* Global Container */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Sections */
+.section {
+  margin-bottom: 40px;
+}
+
+/* Collaborators, Stages, and Task Sections */
+.collaborators-section,
+.stages-section,
+.stage-container {
+  background-color: #f9f9f9;
+  padding: 20px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  margin-bottom: 20px;
+}
+
+/* Tables */
+.table {
+  width: 100%;
+  margin-bottom: 20px;
+}
+
+.table th,
+.table td {
+  vertical-align: middle;
+}
+
+/* Buttons */
+.button {
+  padding: 8px 16px;
+  margin-right: 8px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.button:hover {
+  background-color: #0056b3;
+}
+
+.button-secondary {
+  background-color: #6c757d;
+}
+
+.button-secondary:hover {
+  background-color: #5a6268;
+}
+
+/* Margins */
+.margin-top {
+  margin-top: 20px;
+}
+
+.margin-bottom {
+  margin-bottom: 20px;
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-section {
+  background-color: #fff;
+  padding: 20px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  margin-top: 20px;
+}
+
+/* Labels */
+.form-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: bold;
+}
+
+/* Inputs and Selects */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="date"],
+textarea,
+select {
+  width: 100%;
+  padding: 8px;
+  box-sizing: border-box;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  height: 35px;
+}
+
+textarea {
+  height: 100px;
+  resize: vertical;
+}
+
+/* Checkboxes */
+input[type="checkbox"] {
+  transform: scale(1.2);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+
+  .button {
+    width: 100%;
+    margin-bottom: 10px;
+  }
+
+  .table-responsive {
+    overflow-x: auto;
+  }
+}
+
+--- frontend/src/index.js ---
+
+// src/index.js
+
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+import { AuthProvider } from './context/AuthContext'; // Corrected path
+import 'react-toastify/dist/ReactToastify.css'; // Import React Toastify CSS
+import 'bootstrap/dist/css/bootstrap.min.css'; // Import Bootstrap CSS
+import './styles.css'; // Import global styles
+
+ReactDOM.render(
+  <React.StrictMode>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </React.StrictMode>,
+  document.getElementById('root')
+);

@@ -1,12 +1,27 @@
 const express = require('express');
 const router = express.Router();
-const userController = require('../controllers/userController');
+const {
+    createUser,
+    getAllUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    getUserDetails,
+} = require('../controllers/userController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-router.post('/register', userController.createUser);
-router.post('/login', userController.loginUser);  // New login route
-router.get('/:id', userController.getUserById);
-router.put('/:id', userController.updateUser);
-router.delete('/:id', userController.deleteUser);
-router.get('/', userController.getAllUsers);
+console.log('Initializing User Routes');
+
+// Allow unauthenticated access to registration
+router.post('/create', createUser);
+
+// Apply middleware to protect all other routes
+router.use(authMiddleware);
+
+router.get('/getAll', getAllUsers);
+router.get('/me', getUserDetails); // New route for current user details
+router.get('/:id', getUserById);
+router.put('/:id', updateUser);
+router.delete('/:id', deleteUser);
 
 module.exports = router;

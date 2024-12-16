@@ -1,18 +1,24 @@
+// Backend/routes/taskRoutes.js
 const express = require('express');
 const router = express.Router();
-const { getTasksByUser, getTaskById, updateTask, deleteTask, createTask } = require('../controllers/taskController');
-const { isAuthenticated } = require('../middleware/authMiddleware');  // Use central authentication middleware
+const authMiddleware = require('../middleware/authMiddleware');
+const validateTask = require('../middleware/validateTask');
+const { 
+    getTasksByUser, 
+    getTaskById, 
+    updateTask, 
+    deleteTask, 
+    createTask 
+} = require('../controllers/taskController');
 
-// Apply authentication to all task routes
-router.use(isAuthenticated);
+// Protect all task routes
+router.use(authMiddleware);
 
-// Define CRUD routes for tasks
-router.post('/', createTask);
-router.get('/user-tasks', getTasksByUser);  // Route to get all tasks associated with a user
-router.get('/:task_id', getTaskById);
-router.put('/:task_id', updateTask);
-router.delete('/:task_id', deleteTask);
+// Define CRUD routes for tasks with validation where necessary
+router.post('/', validateTask, createTask);     // Create a new task
+router.get('/user-tasks', getTasksByUser);      // Get all tasks associated with a user
+router.get('/:task_id', getTaskById);           // Get a specific task by ID
+router.put('/:task_id', validateTask, updateTask);  // Update a task by ID
+router.delete('/:task_id', deleteTask);         // Delete a task by ID
 
 module.exports = router;
-
-

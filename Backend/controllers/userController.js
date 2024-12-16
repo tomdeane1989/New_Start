@@ -1,94 +1,191 @@
-const { User } = require('../models'); // Ensure it pulls from db object
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const db = require('../models');
+const { User, Company } = db;
+const logger = require('../logger'); // Import Winston logger
 
-// Register a new user
-async function createUser(req, res) {
-    console.log('Request body:', req.body);  // Log request data for debugging
+const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key'; // Use environment variable
+
+// Controller function to create a user
+// Backend/controllers/userController.js
+
+// Controller function to create a user
+const createUser = async (req, res) => {
     try {
-        const { username, email, password, role, first_name, last_name } = req.body;
-        const password_hash = await bcrypt.hash(password, 10);
-        const user = await User.create({ username, email, password_hash, role, first_name, last_name });
-        res.status(201).json({ message: 'User created successfully', user });
-    } catch (error) {
-        console.error('Error in createUser:', error);  // Log specific error
-        res.status(500).json({ error: 'Error creating user' });
-    }
-}
+        const { username, email, password } = req.body;
 
-// Get a master list of all users
-async function getAllUsers(req, res) {
+        if (!username || !email || !password) {
+            logger.warn('Missing required fields: username, email, or password');
+            return res.status(400).json({ error: 'Missing required fields: username, email, or password' });
+        }
+
+        logger.info(`Creating user: ${email}`);
+
+        // Create the user without manually hashing the password
+        const newUser = await User.create({
+            username,
+            email,
+            password_hash: password, // Pass plaintext password; model's hook will hash it
+        });
+
+        logger.info(`User created successfully: user_id=${newUser.user_id}`);
+        res.status(201).json({ message: 'User created successfully', user: newUser });
+    } catch (error) {
+        logger.error(`Error creating user: ${error.message}`);
+        res.status(500).json({ error: 'Failed to create user', details: error.message });
+    }
+};
+
+module.exports = { createUser };
+
+// Controller function to retrieve all users
+const getAllUsers = async (req, res) => {
     try {
-        const users = await User.findAll(); // Fetches all user records
-        res.json(users);
-    } catch (error) {
-        console.error("Error in getAllUsers:", error);
-        res.status(500).json({ error: 'Error retrieving users' });
-    }
-}
+        logger.info('Request received at /getAll');
 
-// Get a single user by ID
-async function getUserById(req, res) {
-    try {
-        const user = await User.findByPk(req.params.id);
-        if (!user) return res.status(404).json({ error: 'User not found' });
-        res.json(user);
-    } catch (error) {
-        console.error("Error in getUserById:", error);
-        res.status(500).json({ error: 'Error retrieving user' });
-    }
-}
+        const users = await User.findAll({
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details
+            },
+        });
 
-// Update a user by ID
-async function updateUser(req, res) {
+        if (!users.length) {
+            logger.warn('No users found in the database.');
+            return res.status(404).json({ message: 'No users found' });
+        }
+
+        logger.info(`Users retrieved successfully: ${users.length} users found.`);
+        res.status(200).json({ message: 'Users retrieved successfully', users });
+    } catch (error) {
+        logger.error(`Error retrieving users: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to retrieve users', details: error.message });
+    }
+};
+
+// Get user by ID
+const getUserById = async (req, res) => {
     try {
         const { id } = req.params;
-        const { username, email, role, first_name, last_name } = req.body;
-        const [updated] = await User.update(
-            { username, email, role, first_name, last_name },
-            { where: { user_id: id } }
-        );
-        if (!updated) return res.status(404).json({ error: 'User not found' });
-        res.json({ message: 'User updated successfully' });
-    } catch (error) {
-        console.error("Error in updateUser:", error);
-        res.status(500).json({ error: 'Error updating user' });
-    }
-}
+        logger.info(`Fetching user with ID: ${id}`);
 
-// Delete a user by ID
-async function deleteUser(req, res) {
+        const user = await User.findByPk(id, {
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details
+            },
+        });
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found`);
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        logger.info(`User retrieved successfully: ${id}`);
+        res.status(200).json(user);
+    } catch (error) {
+        logger.error(`Error in getUserById: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to retrieve user', details: error.message });
+    }
+};
+
+// Get a user by token
+const getUserDetails = async (req, res) => {
+    try {
+        const userId = req.user.id; // Extract the user ID from the token (authMiddleware adds `req.user`)
+        logger.info(`Fetching user details for user ID: ${userId}`);
+
+        const user = await User.findByPk(userId, {
+            attributes: ['user_id', 'username', 'email', 'first_name', 'last_name', 'company_id'], // Select relevant fields
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details if needed
+            },
+        });
+
+        if (!user) {
+            logger.warn(`User with ID ${userId} not found`);
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        logger.info(`User details retrieved successfully for user ID: ${userId}`);
+        res.status(200).json(user);
+    } catch (error) {
+        logger.error(`Error in getUserDetails: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch user details' });
+    }
+};
+
+// Controller function to update a user by ID
+const updateUser = async (req, res) => {
     try {
         const { id } = req.params;
-        const deleted = await User.destroy({ where: { user_id: id } });
-        if (!deleted) return res.status(404).json({ error: 'User not found' });
-        res.json({ message: 'User deleted successfully' });
+        logger.info(`Request received to update user with ID: ${id} and body: ${JSON.stringify(req.body)}`);
+
+        const { company_id, company_name, ...updateFields } = req.body;
+
+        const user = await User.findByPk(id);
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found for update.`);
+            return res.status(404).json({ message: `User with ID ${id} not found` });
+        }
+
+        // Handle company association updates
+        let companyId = company_id || user.company_id;
+
+        if (company_name) {
+            const existingCompany = await Company.findOne({ where: { company_name } });
+            if (existingCompany) {
+                companyId = existingCompany.company_id;
+                logger.info(`Using existing company: ${company_name} with ID: ${companyId}`);
+            } else {
+                const newCompany = await Company.create({ company_name });
+                companyId = newCompany.company_id;
+                logger.info(`Created new company: ${company_name} with ID: ${companyId}`);
+            }
+        }
+
+        const updatedUser = await user.update({ ...updateFields, company_id: companyId });
+
+        logger.info(`User updated successfully: ${id}`);
+        res.status(200).json({ message: 'User updated successfully', user: updatedUser });
     } catch (error) {
-        console.error("Error in deleteUser:", error);
-        res.status(500).json({ error: 'Error deleting user' });
+        logger.error(`Error updating user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to update user', details: error.message });
     }
-}
+};
 
-
-// Login Route //
-async function loginUser(req, res) {
-    const { email, password } = req.body;
+// Controller function to delete a user by ID
+const deleteUser = async (req, res) => {
     try {
-      const user = await User.findOne({ where: { email } });
-      if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-      const token = jwt.sign({ id: user.user_id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-      res.json({ message: 'Login successful', token });
+        const { id } = req.params;
+        logger.info(`Request received to delete user with ID: ${id}`);
+
+        const user = await User.findByPk(id);
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found for deletion.`);
+            return res.status(404).json({ message: `User with ID ${id} not found` });
+        }
+
+        await user.destroy();
+        logger.info(`User with ID ${id} deleted successfully.`);
+        res.status(200).json({ message: `User with ID ${id} deleted successfully` });
     } catch (error) {
-      console.error('Error in loginUser:', error);
-      res.status(500).json({ error: 'Error logging in' });
+        logger.error(`Error deleting user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to delete user', details: error.message });
     }
-  }
+};
 
-     
-
-
-
-
-module.exports = { createUser, loginUser, getUserById, updateUser, deleteUser, getAllUsers };
+module.exports = {
+    createUser,
+    getAllUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    getUserDetails,
+};
