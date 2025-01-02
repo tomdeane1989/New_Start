@@ -1,0 +1,15 @@
+\d roles
+
+SELECT * FROM roles;
+
+INSERT INTO roles (role_name, description, created_at, updated_at)
+VALUES
+('Buyer', 'Primary party buying the property', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('Seller', 'Primary party selling the property', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('Buyer Solicitor', 'Supports the buyer', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('Seller Solicitor', 'Supports the seller', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('Estate Agent', 'Handles transactions for the buyer or seller', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('Mortgage Advisor', 'Support in the preparation of mortgage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+*** Delete DB Data ***
+TRUNCATE TABLE projectcollaborators, tasks, stages, projects, users RESTART IDENTITY CASCADE;

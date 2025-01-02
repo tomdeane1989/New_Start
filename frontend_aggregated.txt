@@ -1,0 +1,3340 @@
+
+
+--- frontend/src/components/TaskForm.js ---
+
+// src/components/TaskForm.js
+import React, { useState, useEffect } from 'react';
+import {
+  Form,
+  Button,
+  Spinner,
+  Modal,
+  OverlayTrigger,
+  Tooltip,
+  InputGroup
+} from 'react-bootstrap';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { FaTrash } from 'react-icons/fa';
+
+const roleMapping = [
+  { value: 0, label: 'Buyer' },
+  { value: 1, label: 'Seller' },
+  { value: 2, label: 'Buyer Solicitor' },
+  { value: 3, label: 'Seller Solicitor' },
+  { value: 4, label: 'Estate Agent' },
+  { value: 5, label: 'Mortgage Advisor' },
+  { value: 6, label: 'Mortgage Vendor' },
+  { value: 7, label: 'Deposit Gifter' },
+];
+
+function getRoleLabel(roleValue) {
+  const found = roleMapping.find(r => r.value === roleValue);
+  return found ? found.label : 'Unknown';
+}
+
+function TaskForm({
+  mode,
+  taskData,
+  onSubmit,
+  onCancel,
+  stages,
+  initialStageId,
+  projectId,
+  isModal = true,
+  collaborators = [],
+}) {
+  const formattedDueDate = (taskData && taskData.due_date)
+    ? new Date(taskData.due_date).toISOString().split('T')[0]
+    : '';
+
+  // If 'stage_id' is missing or invalid, store as string
+  const [formData, setFormData] = useState({
+    task_name: taskData ? taskData.task_name : '',
+    description: taskData ? (taskData.description || '') : '',
+    due_date: formattedDueDate,
+    priority: taskData ? (taskData.priority || 'Medium') : 'Medium',
+    is_completed: taskData ? taskData.is_completed : false,
+    stage_id: initialStageId || '', // store as string
+    assigned_users: taskData && taskData.assigned_users
+      ? taskData.assigned_users.map(u => String(u.user_id))
+      : [],
+    documents: (taskData && taskData.documents)
+      ? taskData.documents.map(d => d.document_id)
+      : [],
+  });
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [allDocuments, setAllDocuments] = useState([]);
+  const [newFile, setNewFile] = useState(null);
+
+  useEffect(() => {
+    fetchAllDocuments();
+  }, []);
+
+  const fetchAllDocuments = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) return;
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/documents`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setAllDocuments(response.data);
+    } catch (error) {
+      console.error('Error fetching documents:', error);
+      toast.error('Failed to fetch documents.');
+    }
+  };
+
+  // For normal fields
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+
+    let newValue;
+    if (type === 'checkbox') {
+      newValue = checked;
+    } else if (name === 'stage_id') {
+      // store stage as string
+      newValue = value;
+    } else {
+      newValue = value;
+    }
+
+    setFormData(prev => ({ ...prev, [name]: newValue }));
+  };
+
+  // For multiple assigned users
+  const handleAssigneesChange = (e) => {
+    const selectedOptions = Array.from(e.target.selectedOptions);
+    const selectedUserIds = selectedOptions.map(opt => opt.value);
+    setFormData(prev => ({ ...prev, assigned_users: selectedUserIds }));
+  };
+
+  // For multiple documents
+  const handleDocumentSelectChange = (e) => {
+    const selectedOptions = Array.from(e.target.selectedOptions);
+    const selectedDocIds = selectedOptions.map(opt => parseInt(opt.value, 10));
+    setFormData(prev => ({ ...prev, documents: selectedDocIds }));
+  };
+
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      setNewFile(e.target.files[0]);
+    } else {
+      setNewFile(null);
+    }
+  };
+
+  const handleUploadNewDoc = async () => {
+    if (!newFile) {
+      toast.warn('No file selected.');
+      return;
+    }
+    try {
+      setIsSubmitting(true);
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to upload documents.');
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append('file', newFile);
+      // any additional form fields for tags, etc.
+
+      const response = await axios.post(`${process.env.REACT_APP_API_URL}/documents`, fd, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const uploadedDoc = response.data;
+
+      // Add to doc list
+      setAllDocuments(prev => [...prev, uploadedDoc]);
+      // Attach to form
+      setFormData(prev => ({
+        ...prev,
+        documents: [...prev.documents, uploadedDoc.document_id],
+      }));
+      toast.success('Document uploaded and attached!');
+      setNewFile(null);
+    } catch (error) {
+      console.error('Error uploading document:', error);
+      toast.error('Failed to upload document.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleDeleteTask = async () => {
+    if (!taskData || !taskData.task_id) return;
+    try {
+      setIsSubmitting(true);
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to delete tasks.');
+        return;
+      }
+
+      await axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskData.task_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Task deleted successfully!');
+      onSubmit();
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      toast.error('Failed to delete task.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    // convert stage_id to a number
+    const stageIdNum = formData.stage_id ? parseInt(formData.stage_id, 10) : null;
+    if (!projectId || !stageIdNum || !formData.task_name || !formData.priority) {
+      toast.warn('Please ensure Stage, Task Name, and Priority are set.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in.');
+        onCancel();
+        return;
+      }
+
+      const submissionAssigned = formData.assigned_users.map(u => parseInt(u, 10));
+
+      const submissionData = {
+        ...formData,
+        stage_id: stageIdNum,
+        project_id: parseInt(projectId, 10),
+        assigned_users: submissionAssigned,
+      };
+
+      // Clean up empty fields
+      if (!submissionData.due_date) delete submissionData.due_date;
+      if (!submissionData.description?.trim()) delete submissionData.description;
+
+      if (mode === 'edit') {
+        if (!taskData || !taskData.task_id) {
+          toast.error('Invalid task data.');
+          return;
+        }
+        await axios.put(
+          `${process.env.REACT_APP_API_URL}/tasks/${taskData.task_id}`,
+          submissionData,
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+        );
+        toast.success('Task updated successfully!');
+      } else {
+        await axios.post(`${process.env.REACT_APP_API_URL}/tasks`, submissionData, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        });
+        toast.success('Task created successfully!');
+      }
+
+      onSubmit(formData);
+    } catch (error) {
+      console.error('Error saving task:', error);
+      if (error.response) {
+        toast.error(
+          `Failed to ${mode === 'edit' ? 'update' : 'create'} task: ${
+            error.response.data.error || 'Unknown error.'
+          }`
+        );
+      } else {
+        toast.error(`Failed to ${mode === 'edit' ? 'update' : 'create'} task.`);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Document dropdown option with a tooltip
+  const renderDocumentOption = (doc) => {
+    const tag = doc.tags && doc.tags.length > 0 ? doc.tags[0] : '(No Tag)';
+    const filename = doc.original_filename || doc.file_name;
+    const uploadedBy = doc.uploaded_by || 'Unknown user';
+    const uploadDate = doc.uploaded_date ? new Date(doc.uploaded_date).toLocaleString() : 'Unknown date';
+
+    return (
+      <OverlayTrigger
+        key={doc.document_id}
+        placement="right"
+        overlay={
+          <Tooltip>
+            {filename}<br/>
+            Uploaded by: {uploadedBy}<br/>
+            On: {uploadDate}
+          </Tooltip>
+        }
+      >
+        <option value={doc.document_id}>{tag}</option>
+      </OverlayTrigger>
+    );
+  };
+
+  const formContent = (
+    <Form onSubmit={handleSubmit}>
+      <Form.Group controlId="taskName" className="mb-3">
+        <Form.Label>Task Name</Form.Label>
+        <Form.Control
+          type="text"
+          name="task_name"
+          value={formData.task_name}
+          onChange={handleChange}
+          required
+        />
+      </Form.Group>
+
+      <Form.Group controlId="description" className="mb-3">
+        <Form.Label>Description (optional)</Form.Label>
+        <Form.Control
+          as="textarea"
+          name="description"
+          value={formData.description}
+          onChange={handleChange}
+          rows={3}
+        />
+      </Form.Group>
+
+      <Form.Group controlId="due_date" className="mb-3">
+        <Form.Label>Due Date (optional)</Form.Label>
+        <Form.Control
+          type="date"
+          name="due_date"
+          value={formData.due_date}
+          onChange={handleChange}
+        />
+      </Form.Group>
+
+      <Form.Group controlId="priority" className="mb-3">
+        <OverlayTrigger
+          placement="right"
+          overlay={<Tooltip>Higher priority tasks should be tackled first.</Tooltip>}
+        >
+          <Form.Label>Priority</Form.Label>
+        </OverlayTrigger>
+        <Form.Select
+          name="priority"
+          value={formData.priority}
+          onChange={handleChange}
+          required
+        >
+          <option value="Low">Low</option>
+          <option value="Medium">Medium</option>
+          <option value="High">High</option>
+        </Form.Select>
+      </Form.Group>
+
+      <Form.Group controlId="is_completed" className="mb-3">
+        <Form.Check
+          type="checkbox"
+          label="Completed"
+          name="is_completed"
+          checked={formData.is_completed}
+          onChange={handleChange}
+        />
+      </Form.Group>
+
+      <Form.Group controlId="stage_id" className="mb-3">
+        <Form.Label>Stage</Form.Label>
+        <Form.Select name="stage_id" value={formData.stage_id} onChange={handleChange} required>
+          <option value="">Select Stage</option>
+          {stages.map((stage) => (
+            <option key={stage.stage_id} value={String(stage.stage_id)}>
+              {stage.stage_name}
+            </option>
+          ))}
+        </Form.Select>
+      </Form.Group>
+
+      <Form.Group controlId="assigned_users" className="mb-3">
+        <Form.Label>Assign To (optional)</Form.Label>
+        <Form.Control
+          as="select"
+          multiple
+          name="assigned_users"
+          value={formData.assigned_users}
+          onChange={handleAssigneesChange}
+        >
+          {collaborators.map((c) => {
+            const firstName = c.user?.first_name || '';
+            const lastName = c.user?.last_name || '';
+            const name = `${firstName} ${lastName}`.trim() || 'Unknown User';
+            const roleLabel = getRoleLabel(c.role);
+            return (
+              <option key={c.collaborator_id} value={String(c.user_id)}>
+                {name} ({roleLabel})
+              </option>
+            );
+          })}
+        </Form.Control>
+      </Form.Group>
+
+      {/* Documents multi-select */}
+      <Form.Group controlId="documents" className="mb-3">
+        <Form.Label>Attach Documents</Form.Label>
+        {allDocuments.length === 0 ? (
+          <>
+            <Form.Control as="select" multiple disabled>
+              <option>No documents available.</option>
+            </Form.Control>
+            <Form.Text className="text-muted">
+              Go to <strong>Documents</strong> page to upload.
+            </Form.Text>
+          </>
+        ) : (
+          <Form.Control
+            as="select"
+            multiple
+            name="documents"
+            value={formData.documents.map(id => String(id))}
+            onChange={handleDocumentSelectChange}
+          >
+            {allDocuments.map(renderDocumentOption)}
+          </Form.Control>
+        )}
+      </Form.Group>
+
+      <Form.Group controlId="uploadNewDoc" className="mb-3">
+        <Form.Label>Upload New Document (optional)</Form.Label>
+        <InputGroup>
+          <Form.Control type="file" onChange={handleFileChange} />
+          <Button variant="outline-secondary" onClick={handleUploadNewDoc} disabled={isSubmitting || !newFile}>
+            {isSubmitting ? 'Uploading...' : 'Upload'}
+          </Button>
+        </InputGroup>
+      </Form.Group>
+
+      <div className="d-flex justify-content-end">
+        {mode === 'edit' && taskData && taskData.task_id && (
+          <Button
+            variant="danger"
+            className="me-auto"
+            disabled={isSubmitting}
+            onClick={handleDeleteTask}
+          >
+            <FaTrash className="me-2" />
+            Delete Task
+          </Button>
+        )}
+        <Button variant="secondary" onClick={onCancel} className="me-2">
+          Cancel
+        </Button>
+        <Button variant="primary" type="submit" disabled={isSubmitting}>
+          {isSubmitting ? (
+            <>
+              <Spinner as="span" animation="border" size="sm" className="me-2" />
+              Saving...
+            </>
+          ) : mode === 'edit' ? 'Save Changes' : 'Create Task'}
+        </Button>
+      </div>
+    </Form>
+  );
+
+  if (isModal) {
+    return (
+      <Modal show onHide={onCancel} size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>{formContent}</Modal.Body>
+      </Modal>
+    );
+  }
+
+  return (
+    <div className="task-form-page">
+      <h2>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</h2>
+      {formContent}
+    </div>
+  );
+}
+
+export default TaskForm;
+
+--- frontend/src/components/Header.js ---
+
+// src/components/Header.js
+import React, { useContext } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Navbar, Nav, Container, Button } from 'react-bootstrap';
+import { AuthContext } from '../context/AuthContext';
+
+function Header() {
+  const { isAuthenticated, logout } = useContext(AuthContext);
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  return (
+    <Navbar bg="primary" variant="dark" expand="lg" className="shadow-sm">
+      <Container>
+        <Navbar.Brand as={Link} to="/">
+          <img
+            src="/logo.png"
+            alt="Project Logo"
+            height="30"
+            className="d-inline-block align-top me-2"
+          />
+          TD TEST PROJECT
+        </Navbar.Brand>
+        <Navbar.Toggle aria-controls="navbar-nav" />
+        <Navbar.Collapse id="navbar-nav">
+          <Nav className="ms-auto">
+            {!isAuthenticated ? (
+              <>
+                <Nav.Link as={Link} to="/register" className="me-3">
+                  Register
+                </Nav.Link>
+                <Nav.Link as={Link} to="/login">
+                  Login
+                </Nav.Link>
+              </>
+            ) : (
+              <>
+                <Nav.Link as={Link} to="/dashboard" className="me-3">
+                  Dashboard
+                </Nav.Link>
+                <Nav.Link as={Link} to="/profile" className="me-3">
+                  Profile
+                </Nav.Link>
+                <Nav.Link as={Link} to="/projects" className="me-3">
+                  Projects
+                </Nav.Link>
+                {/* New link to Documents */}
+                <Nav.Link as={Link} to="/documents" className="me-3">
+                  Documents
+                </Nav.Link>
+
+                <Button variant="outline-light" onClick={handleLogout}>
+                  Logout
+                </Button>
+              </>
+            )}
+          </Nav>
+        </Navbar.Collapse>
+      </Container>
+    </Navbar>
+  );
+}
+
+export default Header;
+
+--- frontend/src/components/StagesSection.js ---
+
+// src/components/StagesSection.js
+import React, { useState } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import TaskForm from './TaskForm';
+import { Accordion, Table, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
+import { useNavigate } from 'react-router-dom';
+import { FaCheck, FaCheckCircle, FaPaperclip } from 'react-icons/fa';
+
+function StagesSection({ projectId, stages, refetchProject, collaborators = [] }) {
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [taskToEdit, setTaskToEdit] = useState(null);
+  const [mode, setMode] = useState('create');
+
+  const navigate = useNavigate();
+
+  // Edit Task
+  const handleEditTask = async (task) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to edit a task.');
+        return;
+      }
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/${task.task_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setTaskToEdit(response.data);
+      setMode('edit');
+      setShowTaskForm(true);
+    } catch (error) {
+      toast.error('Failed to fetch task for editing.');
+    }
+  };
+
+  // Create Task
+  const handleCreateTask = () => {
+    setTaskToEdit(null);
+    setMode('create');
+    setShowTaskForm(true);
+  };
+
+  // After form submission
+  const handleTaskFormSubmit = () => {
+    setShowTaskForm(false);
+    setTaskToEdit(null);
+    refetchProject();
+  };
+
+  // Complete Task inline
+  const handleCompleteTask = async (task) => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to complete a task.');
+      return;
+    }
+    try {
+      await axios.put(`${process.env.REACT_APP_API_URL}/tasks/${task.task_id}/complete`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Task marked as completed!');
+      refetchProject();
+    } catch (err) {
+      toast.error('Could not complete task.');
+    }
+  };
+
+  const renderDocsTooltip = (task) => {
+    if (!task.documents || task.documents.length === 0) return null;
+
+    const docLines = task.documents.map((d, idx) => {
+      const tag = d.tags && d.tags.length > 0 ? d.tags[0] : '(No Tag)';
+      const orig = d.original_filename || d.file_name || 'unknown';
+      const user = d.uploaded_by || 'unknown user';
+      const dateStr = d.uploaded_date ? new Date(d.uploaded_date).toLocaleString() : 'unknown date';
+      return (
+        <div key={d.document_id}>
+          <strong>{tag}</strong> | {orig} | {user} | {dateStr}
+        </div>
+      );
+    });
+
+    return (
+      <OverlayTrigger
+        placement="top"
+        overlay={<Tooltip id={`tooltip-docs-${task.task_id}`}>{docLines}</Tooltip>}
+      >
+        <FaPaperclip style={{ marginLeft: '8px', cursor: 'pointer' }} />
+      </OverlayTrigger>
+    );
+  };
+
+  const renderTaskCell = (task) => {
+    const isCompleted = task.is_completed;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        {task.task_name}
+        {isCompleted && (
+          <FaCheckCircle size="1em" style={{ color: 'green', marginLeft: '5px' }} />
+        )}
+        {task.documents && task.documents.length > 0 && renderDocsTooltip(task)}
+      </div>
+    );
+  };
+
+  return (
+    <div className="stages-section section mt-4">
+      <div className="d-flex justify-content-between align-items-center mb-3">
+        <h2>Stages</h2>
+        <Button variant="success" onClick={handleCreateTask}>
+          Add Task
+        </Button>
+      </div>
+
+      {stages && stages.length > 0 ? (
+        <Accordion defaultActiveKey="0" alwaysOpen>
+          {stages
+            .sort((a, b) => a.stage_order - b.stage_order)
+            .map((stage, idx) => (
+              <Accordion.Item eventKey={String(idx)} key={stage.stage_id}>
+                <Accordion.Header>
+                  <strong>Stage {stage.stage_order}: {stage.stage_name}</strong>
+                </Accordion.Header>
+                <Accordion.Body>
+                  {stage.tasks && stage.tasks.length > 0 ? (
+                    <div className="table-responsive">
+                      <Table hover borderless>
+                        <thead>
+                          <tr>
+                            <th>Task</th>
+                            <th>Due Date</th>
+                            <th style={{ width: '30%' }}>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stage.tasks.map((task) => {
+                            const isCompleted = task.is_completed;
+                            return (
+                              <tr key={task.task_id}
+                                style={{
+                                  backgroundColor: isCompleted ? '#e2e3e5' : '',
+                                  opacity: isCompleted ? 0.8 : 1,
+                                }}
+                              >
+                                <td>{renderTaskCell(task)}</td>
+                                <td>{task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'}</td>
+                                <td>
+                                  <Button
+                                    variant="outline-success"
+                                    size="sm"
+                                    className="me-2"
+                                    disabled={isCompleted}
+                                    onClick={() => handleCompleteTask(task)}
+                                  >
+                                    <FaCheck />
+                                  </Button>
+                                  <Button
+                                    variant="outline-primary"
+                                    size="sm"
+                                    className="me-2"
+                                    onClick={() => handleEditTask(task)}
+                                  >
+                                    Edit
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <p>No tasks in this stage yet.</p>
+                  )}
+                </Accordion.Body>
+              </Accordion.Item>
+            ))}
+        </Accordion>
+      ) : (
+        <p>No stages found.</p>
+      )}
+
+      {showTaskForm && (
+        <TaskForm
+          mode={mode}
+          taskData={taskToEdit}
+          onSubmit={handleTaskFormSubmit}
+          onCancel={() => {
+            setShowTaskForm(false);
+            setTaskToEdit(null);
+          }}
+          stages={stages}
+          initialStageId={mode === 'edit' && taskToEdit ? String(taskToEdit.stage_id) : ''}
+          projectId={projectId}
+          isModal
+          collaborators={collaborators}
+        />
+      )}
+    </div>
+  );
+}
+
+export default StagesSection;
+
+--- frontend/src/components/CollaboratorsSection.js ---
+
+// src/components/CollaboratorsSection.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { 
+  Table, 
+  Button, 
+  Form, 
+  Modal, 
+  Spinner, 
+  OverlayTrigger, // Imported OverlayTrigger
+  Tooltip          // Imported Tooltip
+} from 'react-bootstrap'; // Added OverlayTrigger and Tooltip to imports
+import { useNavigate } from 'react-router-dom';
+import ConfirmModal from './ConfirmModal'; // Import ConfirmModal
+import { v4 as uuidv4 } from 'uuid'; // Import uuid for unique IDs
+
+const roleOptions = [
+  { value: '0', label: 'Buyer' },
+  { value: '1', label: 'Seller' },
+  { value: '2', label: 'Buyer Solicitor' },
+  { value: '3', label: 'Seller Solicitor' },
+  { value: '4', label: 'Estate Agent' },
+  { value: '5', label: 'Mortgage Advisor' },
+  { value: '6', label: 'Mortgage Vendor' },
+  { value: '7', label: 'Deposit Gifter' }
+];
+
+function getRoleLabel(roleValue) {
+  const found = roleOptions.find(r => r.value === String(roleValue));
+  return found ? found.label : 'Unknown';
+}
+
+function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }) {
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newCollaboratorEmail, setNewCollaboratorEmail] = useState('');
+  const [newCollaboratorRole, setNewCollaboratorRole] = useState('0');
+  const [isAdding, setIsAdding] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [collaboratorToDelete, setCollaboratorToDelete] = useState(null);
+  const navigate = useNavigate();
+
+  const handleAddCollaborator = async (e) => {
+    e.preventDefault();
+    setIsAdding(true);
+    try {
+      const token = localStorage.getItem('jwtToken');
+      await axios.post(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators`, {
+        email: newCollaboratorEmail,
+        role: parseInt(newCollaboratorRole, 10),
+      }, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      toast.success('Collaborator added successfully!');
+      setShowAddForm(false);
+      setNewCollaboratorEmail('');
+      setNewCollaboratorRole('0');
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error adding collaborator:', error);
+      toast.error('Failed to add collaborator.');
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
+  const handleDeleteCollaborator = async () => {
+    const token = localStorage.getItem('jwtToken');
+    try {
+      await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaboratorToDelete.collaborator_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success('Collaborator removed successfully!');
+      setShowDeleteModal(false);
+      setCollaboratorToDelete(null);
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error removing collaborator:', error);
+      toast.error('Failed to remove collaborator.');
+    }
+  };
+
+  const getCollaboratorInfo = (userId) => {
+    const collab = collaborators.find(c => c.user_id === userId);
+    if (!collab || !collab.user) return { name: 'Unknown', role: 'Unknown' };
+    const name = `${collab.user.first_name || ''} ${collab.user.last_name || ''}`.trim() || 'Unknown';
+    const roleLabel = getRoleLabel(collab.role);
+    return { name, role: roleLabel };
+  };
+
+  const renderAssignedUsers = (task) => {
+    if (!task.assigned_users || task.assigned_users.length === 0) {
+      return <span className="text-muted">None</span>;
+    }
+
+    const assignedDetails = task.assigned_users.map(u => getCollaboratorInfo(u.user_id));
+    const displayLimit = 2;
+
+    if (assignedDetails.length <= displayLimit) {
+      return (
+        <>
+          {assignedDetails.map((a, idx) => (
+            <span key={idx} className="me-2">
+              {a.name} ({a.role})
+            </span>
+          ))}
+        </>
+      );
+    } else {
+      const firstTwo = assignedDetails.slice(0, displayLimit);
+      const remaining = assignedDetails.slice(displayLimit);
+      const tooltipId = uuidv4(); // Unique ID
+
+      const tooltip = (
+        <Tooltip id={tooltipId}>
+          {remaining.map((a, idx) => (
+            <div key={idx}>
+              {a.name} ({a.role})
+            </div>
+          ))}
+        </Tooltip>
+      );
+
+      return (
+        <>
+          {firstTwo.map((a, idx) => (
+            <span key={idx} className="me-2">
+              {a.name} ({a.role})
+            </span>
+          ))}
+          {remaining.length > 0 && (
+            <OverlayTrigger overlay={tooltip} placement="right">
+              <span className="text-primary" style={{ cursor: 'pointer' }}>
+                +{remaining.length} more
+              </span>
+            </OverlayTrigger>
+          )}
+        </>
+      );
+    }
+  };
+
+  return (
+    <div className="collaborators-section section">
+      <h2>Project Team</h2>
+      {collaborators && collaborators.length > 0 ? (
+        <div className="table-responsive">
+          <Table striped bordered hover>
+            <thead>
+              <tr>
+                <th>Name & Role</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {collaborators.map((collab) => {
+                const name = `${collab.user?.first_name || ''} ${collab.user?.last_name || ''}`.trim() || 'Unknown User';
+                const roleLabel = getRoleLabel(collab.role);
+                return (
+                  <tr key={collab.collaborator_id}>
+                    <td>{name} ({roleLabel})</td>
+                    <td>
+                      <Button
+                        variant="outline-danger"
+                        size="sm"
+                        onClick={() => {
+                          setCollaboratorToDelete(collab);
+                          setShowDeleteModal(true);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </Table>
+        </div>
+      ) : (
+        <p>No collaborators found.</p>
+      )}
+
+      <Button variant={showAddForm ? 'secondary' : 'success'} className="mt-3" onClick={() => setShowAddForm(!showAddForm)}>
+        {showAddForm ? 'Cancel' : 'Add Collaborator'}
+      </Button>
+
+      {/* Add Collaborator Form Modal */}
+      <Modal show={showAddForm} onHide={() => setShowAddForm(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Add a New Collaborator</Modal.Title>
+        </Modal.Header>
+        <Form onSubmit={handleAddCollaborator}>
+          <Modal.Body>
+            <Form.Group controlId="email" className="mb-3">
+              <Form.Label>Email:</Form.Label>
+              <Form.Control
+                type="email"
+                value={newCollaboratorEmail}
+                onChange={(e) => setNewCollaboratorEmail(e.target.value)}
+                placeholder="Enter collaborator's email"
+                required
+              />
+            </Form.Group>
+            <Form.Group controlId="role" className="mb-3">
+              <Form.Label>Role:</Form.Label>
+              <Form.Control
+                as="select"
+                value={newCollaboratorRole}
+                onChange={(e) => setNewCollaboratorRole(e.target.value)}
+              >
+                {roleOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </Form.Control>
+            </Form.Group>
+          </Modal.Body>
+          <Modal.Footer>
+            <Button variant="secondary" onClick={() => setShowAddForm(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" disabled={isAdding}>
+              {isAdding ? (
+                <>
+                  <Spinner
+                    as="span"
+                    animation="border"
+                    size="sm"
+                    role="status"
+                    aria-hidden="true"
+                  /> Adding...
+                </>
+              ) : (
+                'Add Collaborator'
+              )}
+            </Button>
+          </Modal.Footer>
+        </Form>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        show={showDeleteModal}
+        handleClose={() => setShowDeleteModal(false)}
+        handleConfirm={handleDeleteCollaborator}
+        title="Confirm Removal"
+        body={
+          collaboratorToDelete
+            ? `Are you sure you want to remove ${collaboratorToDelete.user?.first_name || ''} ${collaboratorToDelete.user?.last_name || ''}?`
+            : 'Are you sure you want to remove this collaborator?'
+        }
+      />
+    </div>
+  );
+}
+
+export default CollaboratorsSection;
+
+--- frontend/src/components/ProtectedRoute.js ---
+
+// Frontend/src/components/ProtectedRoute.js
+
+import React, { useContext } from 'react';
+import { Navigate } from 'react-router-dom';
+import { AuthContext } from '../context/AuthContext'; // Corrected path
+
+const ProtectedRoute = ({ children }) => {
+  const { isAuthenticated } = useContext(AuthContext);
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return children;
+};
+
+export default ProtectedRoute;
+
+--- frontend/src/components/ConfirmModal.js ---
+
+// src/components/ConfirmModal.js
+
+import React from 'react';
+import { Modal, Button } from 'react-bootstrap';
+
+const ConfirmModal = ({ show, handleClose, handleConfirm, title, body }) => {
+  return (
+    <Modal
+      show={show}
+      onHide={handleClose}
+      backdrop="static"
+      keyboard={false}
+      aria-labelledby="confirm-modal-title"
+      role="dialog"
+    >
+      {title && (
+        <Modal.Header closeButton>
+          <Modal.Title id="confirm-modal-title">{title}</Modal.Title>
+        </Modal.Header>
+      )}
+      {body && <Modal.Body>{body}</Modal.Body>}
+      <Modal.Footer>
+        <Button variant="secondary" onClick={handleClose}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={handleConfirm}>
+          Confirm
+        </Button>
+      </Modal.Footer>
+    </Modal>
+  );
+};
+
+export default ConfirmModal;
+
+--- frontend/src/pages/Profile.js ---
+
+// src/pages/Profile.js
+
+import React, { useContext, useState, useEffect } from 'react';
+import { UserContext } from '../context/UserContext';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert, Container, Row, Col, Card } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Profile() {
+  const { user, setUser, loading } = useContext(UserContext);
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    first_name: '',
+    last_name: '',
+  });
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [error, setError] = useState(null);
+
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading) {
+      const token = localStorage.getItem('jwtToken');
+      if (!user) {
+        if (!token) {
+          toast.warn('You must be logged in to access the profile.');
+          navigate('/login');
+        }
+      } else {
+        setFormData({
+          username: user.username || '',
+          email: user.email || '',
+          first_name: user.first_name || '',
+          last_name: user.last_name || '',
+        });
+      }
+    }
+  }, [user, loading, navigate]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setIsUpdating(true);
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('No token found. Please log in again.');
+      return navigate('/login');
+    }
+
+    try {
+      const userId = user?.user_id;
+      const response = await axios.put(
+        `${process.env.REACT_APP_API_URL}/users/${userId}`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const updatedUser = response.data.user || response.data;
+      setUser(updatedUser);
+
+      toast.success('Profile updated successfully!');
+    } catch (err) {
+      const errorMessage = err.response?.data?.error || 'Failed to update profile. Please try again.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5 text-center">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading...</span>
+          </Spinner>
+          <p className="mt-3">Loading your profile...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={8}>
+            <Card className="shadow-sm">
+              <Card.Body>
+                <h1>Your Profile</h1>
+                <Form onSubmit={handleSubmit} className="mt-4">
+                  {error && <Alert variant="danger">{error}</Alert>}
+
+                  <Form.Group controlId="username" className="mb-3">
+                    <Form.Label>Username:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="username"
+                      value={formData.username}
+                      onChange={handleChange}
+                      placeholder="Enter your username"
+                      required
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="email" className="mb-3">
+                    <Form.Label>Email:</Form.Label>
+                    <Form.Control
+                      type="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleChange}
+                      placeholder="Enter your email"
+                      required
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="first_name" className="mb-3">
+                    <Form.Label>First Name:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="first_name"
+                      value={formData.first_name}
+                      onChange={handleChange}
+                      placeholder="Enter your first name"
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="last_name" className="mb-3">
+                    <Form.Label>Last Name:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="last_name"
+                      value={formData.last_name}
+                      onChange={handleChange}
+                      placeholder="Enter your last name"
+                    />
+                  </Form.Group>
+
+                  <div className="d-flex justify-content-end">
+                    <Button variant="secondary" onClick={() => navigate('/dashboard')} className="me-2">
+                      Back to Dashboard
+                    </Button>
+                    <Button variant="primary" type="submit" disabled={isUpdating}>
+                      {isUpdating ? (
+                        <>
+                          <Spinner
+                            as="span"
+                            animation="border"
+                            size="sm"
+                            role="status"
+                            aria-hidden="true"
+                            className="me-2"
+                          /> Saving...
+                        </>
+                      ) : (
+                        'Save Changes'
+                      )}
+                    </Button>
+                  </div>
+                </Form>
+              </Card.Body>
+            </Card>
+          </Col>
+        </Row>
+      </Container>
+    </>
+  );
+}
+
+export default Profile;
+
+--- frontend/src/pages/DocumentsPage.js ---
+
+// src/pages/DocumentsPage.js
+
+import React, { useEffect, useState } from 'react';
+import {
+  Container,
+  Row,
+  Col,
+  Card,
+  Form,
+  Button,
+  Spinner,
+  Badge,
+  OverlayTrigger,
+  Tooltip,
+  Modal
+} from 'react-bootstrap';
+import { toast } from 'react-toastify';
+import axios from 'axios';
+import Header from '../components/Header';
+import { FaSearchPlus } from 'react-icons/fa';
+
+// Default tags
+const defaultTags = [
+  'Proof of Identity',
+  'Bank Statement',
+  'Pay Slip',
+  'Proof of Employment',
+];
+
+function DocumentsPage() {
+  const [documents, setDocuments] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // For preview
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState(null);
+
+  useEffect(() => {
+    fetchDocuments();
+  }, []);
+
+  const fetchDocuments = async () => {
+    try {
+      setIsLoading(true);
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/documents`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setDocuments(response.data);
+    } catch (error) {
+      console.error('Error fetching documents:', error);
+      toast.error('Failed to fetch documents.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+    } else {
+      setSelectedFile(null);
+    }
+  };
+
+  const handleTagChange = (e) => {
+    const sel = Array.from(e.target.selectedOptions).map(opt => opt.value);
+    setSelectedTags(sel);
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      toast.warn('No file selected.');
+      return;
+    }
+    try {
+      setIsUploading(true);
+      const token = localStorage.getItem('jwtToken');
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      selectedTags.forEach(tag => formData.append('tags', tag));
+
+      const response = await axios.post(`${process.env.REACT_APP_API_URL}/documents`, formData, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const uploadedDoc = response.data;
+      toast.success('Document uploaded!');
+      setDocuments(prev => [...prev, uploadedDoc]);
+      setSelectedFile(null);
+      setSelectedTags([]);
+    } catch (error) {
+      console.error('Error uploading document:', error);
+      toast.error('Failed to upload document.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const isPDF = (url) => url.toLowerCase().endsWith('.pdf');
+
+  const handlePreviewClick = (doc) => {
+    setPreviewDoc(doc);
+    setShowPreview(true);
+  };
+
+  const handleClosePreview = () => {
+    setShowPreview(false);
+    setPreviewDoc(null);
+  };
+
+  // Tooltip for doc's original filename, user, date
+  const renderDocTooltip = (doc) => {
+    const original = doc.original_filename || doc.file_name || 'unknown filename';
+    const user = doc.uploaded_by || 'unknown user';
+    const dateStr = doc.uploaded_date ? new Date(doc.uploaded_date).toLocaleString() : 'unknown date';
+    return (
+      <Tooltip>
+        {original}<br/>
+        Uploaded by: {user}<br/>
+        {dateStr}
+      </Tooltip>
+    );
+  };
+
+  // Show doc's main "tag" as the card title
+  const renderDocTitle = (doc) => {
+    const primaryTag = (doc.tags && doc.tags.length > 0) ? doc.tags[0] : 'No Tags';
+    return (
+      <OverlayTrigger placement="top" overlay={renderDocTooltip(doc)}>
+        <span style={{ cursor: doc.file_url ? 'pointer' : 'default' }}>
+          {primaryTag}
+        </span>
+      </OverlayTrigger>
+    );
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-4">
+        <h1>Documents</h1>
+        <Row className="mb-3">
+          <Col md={6}>
+            <Form.Group controlId="documentFile" className="mb-3">
+              <Form.Label>Upload a new document</Form.Label>
+              <Form.Control type="file" onChange={handleFileChange} />
+            </Form.Group>
+          </Col>
+          <Col md={4}>
+            <Form.Group controlId="tagsSelect" className="mb-3">
+              <Form.Label>Tags (optional)</Form.Label>
+              <Form.Control as="select" multiple value={selectedTags} onChange={handleTagChange}>
+                {defaultTags.map(tag => (
+                  <option key={tag} value={tag}>
+                    {tag}
+                  </option>
+                ))}
+              </Form.Control>
+              <Form.Text className="text-muted">
+                Hold Ctrl (Windows) or Cmd (Mac) to select multiple tags.
+              </Form.Text>
+            </Form.Group>
+          </Col>
+          <Col md={2} className="d-flex align-items-end">
+            <Button variant="primary" onClick={handleUpload} disabled={isUploading}>
+              {isUploading ? (
+                <>
+                  <Spinner as="span" animation="border" size="sm" className="me-2" />
+                  Uploading...
+                </>
+              ) : (
+                'Upload'
+              )}
+            </Button>
+          </Col>
+        </Row>
+
+        {isLoading ? (
+          <div className="text-center">
+            <Spinner animation="border" role="status" />
+            <p>Loading Documents...</p>
+          </div>
+        ) : documents.length === 0 ? (
+          <p>No documents found.</p>
+        ) : (
+          <Row xs={1} md={2} lg={3} className="g-4">
+            {documents.map((doc) => (
+              <Col key={doc.document_id}>
+                <Card className="h-100">
+                  <Card.Body>
+                    <Card.Title className="d-flex justify-content-between">
+                      {renderDocTitle(doc)}
+                      {doc.file_url && (
+                        <FaSearchPlus
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => handlePreviewClick(doc)}
+                        />
+                      )}
+                    </Card.Title>
+
+                    <div className="mb-2">
+                      {doc.tags && doc.tags.length > 0 ? (
+                        doc.tags.map((t, idx) => (
+                          <Badge bg="info" text="dark" className="me-1" key={idx}>
+                            {t}
+                          </Badge>
+                        ))
+                      ) : (
+                        <Badge bg="secondary">No tags</Badge>
+                      )}
+                    </div>
+
+                    {doc.file_url && (
+                      <Button
+                        variant="outline-primary"
+                        size="sm"
+                        href={doc.file_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        View / Download
+                      </Button>
+                    )}
+                  </Card.Body>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        )}
+      </Container>
+
+      {/* Preview Modal */}
+      <Modal show={showPreview} onHide={handleClosePreview} size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>
+            {previewDoc
+              ? (previewDoc.tags && previewDoc.tags.length > 0
+                  ? previewDoc.tags[0]
+                  : 'Document Preview'
+                )
+              : 'Document Preview'}
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {previewDoc && previewDoc.file_url ? (
+            isPDF(previewDoc.file_url) ? (
+              <iframe
+                src={previewDoc.file_url}
+                title="PDF Preview"
+                style={{ width: '100%', height: '70vh' }}
+              />
+            ) : (
+              <img
+                src={previewDoc.file_url}
+                alt="document"
+                style={{ maxWidth: '100%' }}
+              />
+            )
+          ) : (
+            <p>Unable to preview this document.</p>
+          )}
+        </Modal.Body>
+      </Modal>
+    </>
+  );
+}
+
+export default DocumentsPage;
+
+--- frontend/src/pages/Register.js ---
+
+// src/pages/Register.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert, Container, Row, Col, Card } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Register() {
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    first_name: '',
+    last_name: '',
+  });
+
+  const [error, setError] = useState(null);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const navigate = useNavigate();
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setIsRegistering(true);
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to create a project.');
+      navigate('/login');
+    }
+
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/users/create`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const { token: receivedToken } = response.data;
+      localStorage.setItem('jwtToken', receivedToken);
+
+      toast.success('Registration successful!');
+      navigate('/dashboard');
+    } catch (error) {
+      const errorMessage = error.response?.data?.error || 'Something went wrong. Please try again.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={8}>
+            <Card className="shadow-sm">
+              <Card.Body>
+                <h1 className="mb-4">Create Account</h1>
+                <Form onSubmit={handleSubmit}>
+                  {error && <Alert variant="danger">{error}</Alert>}
+
+                  <Form.Group controlId="username" className="mb-3">
+                    <Form.Label>Username:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="username"
+                      value={formData.username}
+                      onChange={handleChange}
+                      placeholder="Enter your username"
+                      required
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="email" className="mb-3">
+                    <Form.Label>Email:</Form.Label>
+                    <Form.Control
+                      type="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleChange}
+                      placeholder="Enter your email"
+                      required
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="password" className="mb-3">
+                    <Form.Label>Password:</Form.Label>
+                    <Form.Control
+                      type="password"
+                      name="password"
+                      value={formData.password}
+                      onChange={handleChange}
+                      placeholder="Enter your password"
+                      required
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="first_name" className="mb-3">
+                    <Form.Label>First Name:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="first_name"
+                      value={formData.first_name}
+                      onChange={handleChange}
+                      placeholder="Enter your first name"
+                    />
+                  </Form.Group>
+
+                  <Form.Group controlId="last_name" className="mb-3">
+                    <Form.Label>Last Name:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="last_name"
+                      value={formData.last_name}
+                      onChange={handleChange}
+                      placeholder="Enter your last name"
+                    />
+                  </Form.Group>
+
+                  <div className="d-flex justify-content-end">
+                    <Button variant="secondary" onClick={() => navigate('/projects')} className="me-2">
+                      Cancel
+                    </Button>
+                    <Button variant="primary" type="submit" disabled={isRegistering}>
+                      {isRegistering ? (
+                        <>
+                          <Spinner
+                            as="span"
+                            animation="border"
+                            size="sm"
+                            role="status"
+                            aria-hidden="true"
+                            className="me-2"
+                          /> Registering...
+                        </>
+                      ) : (
+                        'Register'
+                      )}
+                    </Button>
+                  </div>
+                </Form>
+              </Card.Body>
+            </Card>
+          </Col>
+        </Row>
+      </Container>
+    </>
+  );
+}
+
+export default Register;
+
+--- frontend/src/pages/ProjectDetails.js ---
+
+// src/pages/ProjectDetails.js
+import React, { useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Container, Spinner, Button, Card, Alert } from 'react-bootstrap';
+import CollaboratorsSection from '../components/CollaboratorsSection';
+import StagesSection from '../components/StagesSection';
+import Header from '../components/Header';
+
+function ProjectDetails() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const [project, setProject] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [collaborators, setCollaborators] = useState([]);
+
+  const fetchProjectDetails = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      console.log('Project Data:', response.data);
+      setProject(response.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error fetching project:', error);
+      toast.error('Failed to fetch project.');
+      setLoading(false);
+    }
+  };
+
+  const fetchCollaborators = async () => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}/collaborators`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setCollaborators(response.data);
+    } catch (error) {
+      console.error('Error fetching collaborators:', error);
+      toast.error('Failed to fetch collaborators.');
+    }
+  };
+
+  const refetchProject = () => {
+    fetchProjectDetails();
+    fetchCollaborators();
+  };
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to view this project.');
+      navigate('/login');
+      return;
+    }
+    fetchProjectDetails();
+    fetchCollaborators();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, navigate]);
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading project details...</span>
+          </Spinner>
+          <p className="mt-3">Loading project details...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (!project) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5">
+          <Alert variant="danger">Project not found or you do not have access.</Alert>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Card className="mb-4">
+          <Card.Body>
+            <Card.Title>{project.project_name}</Card.Title>
+            <Card.Text>{project.description}</Card.Text>
+            <Button variant="primary" onClick={() => navigate(`/projects/${id}/edit`)}>
+              Edit Project
+            </Button>
+          </Card.Body>
+        </Card>
+
+        <CollaboratorsSection
+          projectId={id}
+          collaborators={collaborators}
+          refetchCollaborators={fetchCollaborators}
+        />
+
+        {/* Pass collaborators to StagesSection */}
+        <StagesSection
+          projectId={id}
+          stages={project.stages}
+          refetchProject={refetchProject}
+          collaborators={collaborators}
+        />
+      </Container>
+    </>
+  );
+}
+
+export default ProjectDetails;
+
+--- frontend/src/pages/Projects.js ---
+
+// src/pages/Projects.js
+
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Link, useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { Container, Button, Spinner, Card, Row, Col } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function Projects() {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to view projects.');
+      navigate('/login');
+      return;
+    }
+
+    axios.get(`${process.env.REACT_APP_API_URL}/projects/user`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((response) => {
+        setProjects(response.data);
+        setLoading(false);
+      })
+      .catch((error) => {
+        // Removed console.error for production
+        toast.error('Failed to fetch projects');
+        setLoading(false);
+      });
+  }, [navigate]);
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading projects...</span>
+          </Spinner>
+          <p className="mt-3">Loading projects...</p>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <div className="d-flex justify-content-between align-items-center mb-4">
+          <h1>Your Projects</h1>
+          <Button variant="success" onClick={() => navigate('/projects/create')}>
+            Create New Project
+          </Button>
+        </div>
+        {projects.length === 0 ? (
+          <p>No projects found.</p>
+        ) : (
+          <Row xs={1} md={2} lg={3} className="g-4">
+            {projects.map((proj) => (
+              <Col key={proj.project_id}>
+                <Card>
+                  <Card.Body>
+                    <Card.Title>{proj.project_name}</Card.Title>
+                    <Card.Text>{proj.description}</Card.Text>
+                    <Button as={Link} to={`/projects/${proj.project_id}`} variant="primary">
+                      View Details
+                    </Button>
+                  </Card.Body>
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        )}
+      </Container>
+    </>
+  );
+}
+
+export default Projects;
+
+--- frontend/src/pages/Login.js ---
+
+// src/pages/Login.js
+
+import React, { useState, useContext } from 'react';
+import { useNavigate, Navigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert, Container, Row, Col, Card } from 'react-bootstrap';
+import { AuthContext } from '../context/AuthContext';
+import Header from '../components/Header';
+
+function Login() {
+  const { isAuthenticated, login } = useContext(AuthContext);
+  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [error, setError] = useState(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const navigate = useNavigate();
+
+  if (isAuthenticated) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData({ ...formData, [name]: value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setIsLoggingIn(true);
+
+    try {
+      const response = await axios.post(
+        `${process.env.REACT_APP_API_URL}/auth/login`,
+        formData,
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+
+      const { token } = response.data;
+      login(token);
+      toast.success('Login successful!');
+      navigate('/dashboard');
+    } catch (err) {
+      const errorMessage = err.response?.data?.error || 'Invalid login credentials';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={6}>
+            <Card className="shadow-sm">
+              <Card.Body>
+                <h2 className="text-center mb-4">Login</h2>
+                <Form onSubmit={handleSubmit}>
+                  {error && <Alert variant="danger">{error}</Alert>}
+                  <Form.Group controlId="email" className="mb-3">
+                    <Form.Label>Email:</Form.Label>
+                    <Form.Control
+                      type="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleChange}
+                      placeholder="Enter your email"
+                      required
+                    />
+                  </Form.Group>
+                  <Form.Group controlId="password" className="mb-4">
+                    <Form.Label>Password:</Form.Label>
+                    <Form.Control
+                      type="password"
+                      name="password"
+                      value={formData.password}
+                      onChange={handleChange}
+                      placeholder="Enter your password"
+                      required
+                    />
+                  </Form.Group>
+                  <div className="d-flex justify-content-end">
+                    <Button variant="primary" type="submit" disabled={isLoggingIn}>
+                      {isLoggingIn ? (
+                        <>
+                          <Spinner
+                            as="span"
+                            animation="border"
+                            size="sm"
+                            role="status"
+                            aria-hidden="true"
+                            className="me-2"
+                          /> Logging in...
+                        </>
+                      ) : (
+                        'Login'
+                      )}
+                    </Button>
+                  </div>
+                </Form>
+              </Card.Body>
+            </Card>
+          </Col>
+        </Row>
+      </Container>
+    </>
+  );
+}
+
+export default Login;
+
+--- frontend/src/pages/CreateProject.js ---
+
+// src/pages/CreateProject.js
+
+import React, { useState } from 'react';
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'react-toastify';
+import { Form, Button, Spinner, Alert, Container, Row, Col } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function CreateProject() {
+  const [projectName, setProjectName] = useState('');
+  const [description, setDescription] = useState('');
+  const [userRole, setUserRole] = useState('0'); // 0 = Buyer, 1 = Seller
+  const [error, setError] = useState(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null); // Reset error state
+    setIsCreating(true);
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to create a project.');
+      return navigate('/login');
+    }
+
+    const parsedRole = parseInt(userRole, 10);
+
+    try {
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/projects/create`,
+        {
+          project_name: projectName,
+          description,
+          user_role: parsedRole,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Project created successfully!');
+      navigate('/projects');
+    } catch (error) {
+      console.error('Error creating project:', error);
+      const errorMessage = error.response?.data?.error || 'Failed to create project.';
+      setError(errorMessage);
+      toast.error(errorMessage);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={8}>
+            <div className="form-section">
+              <h1>Create a New Project</h1>
+              <Form onSubmit={handleSubmit} className="mt-4">
+                {error && <Alert variant="danger">{error}</Alert>}
+
+                <Form.Group controlId="projectName" className="mb-3">
+                  <Form.Label>Project Name:</Form.Label>
+                  <Form.Control
+                    type="text"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                    placeholder="Enter the project name"
+                    required
+                  />
+                </Form.Group>
+
+                <Form.Group controlId="description" className="mb-3">
+                  <Form.Label>Description (optional):</Form.Label>
+                  <Form.Control
+                    as="textarea"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Enter a brief description"
+                  />
+                </Form.Group>
+
+                <h3>Are you Buying or Selling a house?</h3>
+                <Form.Group className="mb-3">
+                  <Form.Check
+                    type="radio"
+                    label="I am Buying (Role = Buyer)"
+                    name="user_role"
+                    value="0"
+                    checked={userRole === '0'}
+                    onChange={(e) => setUserRole(e.target.value)}
+                  />
+                  <Form.Check
+                    type="radio"
+                    label="I am Selling (Role = Seller)"
+                    name="user_role"
+                    value="1"
+                    checked={userRole === '1'}
+                    onChange={(e) => setUserRole(e.target.value)}
+                  />
+                </Form.Group>
+
+                <div className="d-flex justify-content-end">
+                  <Button variant="secondary" onClick={() => navigate('/projects')} className="me-2">
+                    Cancel
+                  </Button>
+                  <Button variant="primary" type="submit" disabled={isCreating}>
+                    {isCreating ? (
+                      <>
+                        <Spinner
+                          as="span"
+                          animation="border"
+                          size="sm"
+                          role="status"
+                          aria-hidden="true"
+                        /> Creating...
+                      </>
+                    ) : (
+                      'Create'
+                    )}
+                  </Button>
+                </div>
+              </Form>
+            </div>
+          </Col>
+        </Row>
+      </Container>
+    </>
+  );
+}
+
+export default CreateProject;
+
+--- frontend/src/pages/EditTaskPage.js ---
+
+// src/pages/EditTaskPage.js
+
+import React, { useEffect, useState } from 'react';
+import TaskForm from '../components/TaskForm';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Container, Spinner, Alert } from 'react-bootstrap';
+import Header from '../components/Header';
+
+function EditTaskPage() {
+  const { projectId, taskId } = useParams();
+  const navigate = useNavigate();
+
+  const [stages, setStages] = useState([]);
+  const [taskData, setTaskData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Fetch stages and task data
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        if (!token) {
+          toast.warn('You must be logged in to edit a task.');
+          navigate('/login');
+          return;
+        }
+
+        // Fetch stages
+        const stagesResponse = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setStages(stagesResponse.data);
+
+        // Fetch task data
+        const taskResponse = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setTaskData(taskResponse.data);
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        toast.error('Failed to fetch task or stages.');
+        navigate(`/projects/${projectId}`);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    if (projectId && taskId) {
+      fetchData();
+    } else {
+      toast.error('Invalid project or task ID.');
+      navigate('/projects');
+    }
+  }, [projectId, taskId, navigate]);
+
+  // Handle form submission
+  const handleEditTask = async (updatedTaskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to edit a task.');
+        navigate('/login');
+        return;
+      }
+
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/tasks/${taskId}`,
+        {
+          ...updatedTaskData,
+          project_id: parseInt(projectId, 10), // Ensure project ID is a number
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      navigate(`/projects/${projectId}`); // Redirect to project details page after editing
+    } catch (error) {
+      console.error('Error editing task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to update task: ${error.response.data.error || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to update task.');
+      }
+    }
+  };
+
+  // Handle cancel action
+  const handleCancel = () => {
+    navigate(`/projects/${projectId}`); // Redirect back to project details on cancel
+  };
+
+  if (isLoading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading task data...</span>
+          </Spinner>
+          <p className="mt-3">Loading task data...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (!taskData) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5">
+          <Alert variant="danger">
+            Task not found or you do not have access.
+          </Alert>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <h1>Edit Task</h1>
+        <TaskForm
+          mode="edit"
+          taskData={taskData}
+          onSubmit={handleEditTask}
+          onCancel={handleCancel}
+          stages={stages}
+          initialStageId={String(taskData.stage_id)} // Preselect the task's current stage
+          projectId={projectId} // Pass projectId as prop
+          isModal={false} // Render as standalone form
+        />
+      </Container>
+    </>
+  );
+}
+
+export default EditTaskPage;
+
+--- frontend/src/pages/CreateTaskPage.js ---
+
+// src/pages/CreateTaskPage.js
+
+import React, { useEffect, useState } from 'react';
+import TaskForm from '../components/TaskForm';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Container, Spinner, Alert, Button } from 'react-bootstrap';
+import Header from '../components/Header';
+
+const CreateTaskPage = () => {
+  const { id: projectId } = useParams(); // Dynamic project ID from route
+  const [stages, setStages] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [initialStageId, setInitialStageId] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!projectId) {
+      toast.error('Invalid project ID.');
+      navigate('/projects');
+      return;
+    }
+
+    const fetchStages = async () => {
+      try {
+        const token = localStorage.getItem('jwtToken');
+        if (!token) {
+          toast.warn('You must be logged in to create a task.');
+          navigate('/login');
+          return;
+        }
+
+        const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        // console.log('Fetched stages:', response.data);
+        setStages(response.data);
+        if (response.data.length > 0) {
+          setInitialStageId(String(response.data[0].stage_id)); // Preselect the first stage
+        }
+      } catch (error) {
+        console.error('Error fetching stages:', error);
+        toast.error('Failed to fetch stages.');
+        // Optionally, redirect back to the project page or handle the error as needed
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchStages();
+  }, [projectId, navigate]);
+
+  const handleCreateTask = async (taskData) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to create a task.');
+        navigate('/login');
+        return;
+      }
+
+      // Remove console.log in production
+      // console.log('Creating task with data:', taskData);
+
+      await axios.post(
+        `${process.env.REACT_APP_API_URL}/tasks`,
+        {
+          ...taskData,
+          project_id: parseInt(projectId, 10), // Ensure project ID is a number
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      toast.success('Task created successfully!');
+      navigate(`/projects/${projectId}`); // Redirect to project details page after creation
+    } catch (error) {
+      // Remove or comment out the console.log in production
+      // console.error('Error creating task:', error);
+      if (error.response) {
+        console.error('Error Response Data:', error.response.data);
+        toast.error(`Failed to create task: ${error.response.data.error || 'Unknown error.'}`);
+      } else {
+        toast.error('Failed to create task.');
+      }
+    }
+  };
+
+  const handleCancel = () => {
+    navigate(`/projects/${projectId}`); // Redirect back to project details on cancel
+  };
+
+  if (isLoading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading stages...</span>
+          </Spinner>
+          <p className="mt-3">Loading stages...</p>
+        </Container>
+      </>
+    );
+  }
+
+  if (stages.length === 0) {
+    return (
+      <>
+        <Header />
+        <Container className="mt-5 text-center">
+          <h2>No stages available.</h2>
+          <p>Please add stages to create tasks.</p>
+          <Button variant="primary" onClick={() => navigate(`/projects/${projectId}/add-stage`)}>
+            Add Stage
+          </Button>
+        </Container>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <h1>Create New Task</h1>
+        <TaskForm
+          key={initialStageId ? `create-${initialStageId}` : `create-new-${Date.now()}`} // Ensure unique key
+          mode="create"
+          onSubmit={handleCreateTask}
+          onCancel={handleCancel}
+          stages={stages}
+          initialStageId={initialStageId} // Preselect the first stage
+          projectId={projectId} // Pass projectId as prop
+          isModal={false} // Render as standalone form
+        />
+      </Container>
+    </>
+  );
+};
+
+export default CreateTaskPage;
+
+--- frontend/src/pages/Dashboard.js ---
+
+// src/pages/Dashboard.js
+
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'react-toastify';
+import {
+  Container,
+  Row,
+  Col,
+  Card,
+  Button,
+  Spinner,
+  Table,
+  Dropdown,
+  ButtonGroup,
+  OverlayTrigger,
+  Tooltip,
+  ProgressBar, // Import ProgressBar from react-bootstrap
+} from 'react-bootstrap';
+
+import { FaTrash, FaEdit, FaEye, FaUsers, FaPlus, FaCheck } from 'react-icons/fa';
+import Header from '../components/Header';
+import ConfirmModal from '../components/ConfirmModal';
+import { v4 as uuidv4 } from 'uuid';
+import { roleMapping } from '../constants/roleMapping';
+
+function getRoleLabel(roleValue) {
+  const found = roleMapping.find(r => r.value === roleValue);
+  return found ? found.label : 'Unknown';
+}
+
+function Dashboard() {
+  const [projects, setProjects] = useState([]);
+  const [assignedTasks, setAssignedTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingTasks, setLoadingTasks] = useState(true);
+  const [showDeleteTaskModal, setShowDeleteTaskModal] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState(null);
+  const [showDeleteProjectModal, setShowDeleteProjectModal] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState(null);
+  const [showCompleteTaskModal, setShowCompleteTaskModal] = useState(false);
+  const [taskToComplete, setTaskToComplete] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    fetchProjects();
+    fetchAssignedTasks();
+  }, []);
+
+  const fetchProjects = async () => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) {
+      toast.warn('You must be logged in to access the dashboard.');
+      navigate('/login');
+      return;
+    }
+
+    try {
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/user`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setProjects(response.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+      toast.error('Failed to fetch projects.');
+      setLoading(false);
+    }
+  };
+
+  const fetchAssignedTasks = async () => {
+    const token = localStorage.getItem('jwtToken');
+    if (!token) return;
+
+    try {
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/user-tasks`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setAssignedTasks(response.data);
+      setLoadingTasks(false);
+    } catch (error) {
+      console.error('Error fetching assigned tasks:', error);
+      toast.error('Failed to fetch your assigned tasks.');
+      setLoadingTasks(false);
+    }
+  };
+
+  const deleteProject = (project) => {
+    setProjectToDelete(project);
+    setShowDeleteProjectModal(true);
+  };
+
+  const confirmDeleteProject = async () => {
+    if (!projectToDelete) return;
+    const token = localStorage.getItem('jwtToken');
+    try {
+      await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectToDelete.project_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Project deleted successfully!');
+      setShowDeleteProjectModal(false);
+      setProjectToDelete(null);
+      fetchProjects();
+    } catch (error) {
+      console.error('Error deleting project:', error);
+      toast.error('Failed to delete project.');
+      setShowDeleteProjectModal(false);
+      setProjectToDelete(null);
+    }
+  };
+
+  const markTaskAsCompleted = (task) => {
+    setTaskToComplete(task);
+    setShowCompleteTaskModal(true);
+  };
+
+  const confirmMarkTaskAsCompleted = async () => {
+    if (!taskToComplete) return;
+    const token = localStorage.getItem('jwtToken');
+    try {
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/tasks/${taskToComplete.task_id}/complete`,
+        {},
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      toast.success('Task marked as completed!');
+      setShowCompleteTaskModal(false);
+      setTaskToComplete(null);
+      fetchAssignedTasks();
+    } catch (error) {
+      console.error('Error marking task as completed:', error);
+      if (error.response && error.response.status === 403) {
+        toast.error(error.response.data.error || 'You do not have permission to complete this task.');
+      } else {
+        toast.error('Failed to mark task as completed.');
+      }
+      setShowCompleteTaskModal(false);
+      setTaskToComplete(null);
+    }
+  };
+
+  const handleDeleteTask = (task) => {
+    setTaskToDelete(task);
+    setShowDeleteTaskModal(true);
+  };
+
+  const confirmDeleteTask = async () => {
+    if (!taskToDelete) return;
+    const token = localStorage.getItem('jwtToken');
+    try {
+      await axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskToDelete.task_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Task deleted successfully!');
+      setShowDeleteTaskModal(false);
+      setTaskToDelete(null);
+      fetchAssignedTasks();
+    } catch (error) {
+      console.error('Error deleting task:', error);
+      toast.error('Failed to delete task.');
+      setShowDeleteTaskModal(false);
+      setTaskToDelete(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <>
+        <Header />
+        <Container className="text-center mt-5">
+          <Spinner animation="border" role="status">
+            <span className="visually-hidden">Loading your dashboard...</span>
+          </Spinner>
+          <p className="mt-3">Loading your dashboard...</p>
+        </Container>
+      </>
+    );
+  }
+
+  // Separate projects based on status
+  const openProjects = projects.filter((p) => p.status === 'active');
+  const completedProjects = projects.filter((p) => p.status === 'completed');
+
+  // 1) Compute progress for each project
+  // If each project has stages -> each stage has tasks -> tasks can be completed
+  // We'll compute total tasks vs. completed tasks
+  const calculateProjectProgress = (proj) => {
+    let totalTasks = 0;
+    let doneTasks = 0;
+    if (proj.stages) {
+      proj.stages.forEach(stage => {
+        if (stage.tasks) {
+          totalTasks += stage.tasks.length;
+          doneTasks += stage.tasks.filter(t => t.is_completed).length;
+        }
+      });
+    }
+    if (totalTasks === 0) return 0;
+    return Math.round((doneTasks / totalTasks) * 100);
+  };
+
+  const getCollaboratorInfo = (collaborator) => {
+    if (!collaborator.user) {
+      return { name: 'Unknown', role: 'Unknown' };
+    }
+
+    const user = collaborator.user;
+    const name = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown User';
+    const roleObj = roleMapping.find((r) => r.value === Number(collaborator.role));
+    const roleLabel = roleObj ? roleObj.label : 'Unknown';
+    return { name, role: roleLabel };
+  };
+
+  const renderCollaboratorTooltip = (collaborators) => {
+    if (!collaborators || collaborators.length === 0) {
+      return <span className="text-muted">No collaborators</span>;
+    }
+
+    const collaboratorInfo = collaborators.map(getCollaboratorInfo);
+
+    return (
+      <div>
+        <strong>Collaborators:</strong>
+        <ul className="list-unstyled mb-0">
+          {collaboratorInfo.map((c, idx) => (
+            <li key={idx}>
+              {c.name} ({c.role})
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
+  const renderTaskActions = (task) => (
+    <Dropdown as={ButtonGroup}>
+      <Button
+        variant="outline-secondary"
+        size="sm"
+        onClick={() => navigate(`/projects/${task.project_id}/tasks/${task.task_id}/edit`)}
+        aria-label={`View details of task ${task.task_name}`}
+      >
+        <FaEye className="me-2" /> View
+      </Button>
+      <Dropdown.Toggle split variant="outline-secondary" id={`dropdown-split-basic-${task.task_id}`} />
+      <Dropdown.Menu>
+        <Dropdown.Item onClick={() => navigate(`/projects/${task.project_id}/tasks/${task.task_id}/edit`)}>
+          <FaEdit className="me-2" /> Edit
+        </Dropdown.Item>
+        <Dropdown.Item onClick={() => handleDeleteTask(task)}>
+          <FaTrash className="me-2" /> Delete
+        </Dropdown.Item>
+        <Dropdown.Item onClick={() => markTaskAsCompleted(task)}>
+          <FaCheck className="me-2" /> Mark as Complete
+        </Dropdown.Item>
+      </Dropdown.Menu>
+    </Dropdown>
+  );
+
+  const renderProject = (proj) => {
+    const progress = calculateProjectProgress(proj);
+
+    return (
+      <Col key={proj.project_id} xs={12} md={6} lg={4}>
+        <Card className="mb-4 shadow h-100">
+          <Card.Body className="d-flex flex-column">
+            <Card.Title className="d-flex justify-content-between align-items-center">
+              <span className="text-primary fw-bold">{proj.project_name}</span>
+              <OverlayTrigger
+                placement="top"
+                overlay={
+                  <Tooltip id={`tooltip-collaborators-${proj.project_id}`}>
+                    {renderCollaboratorTooltip(proj.collaborators)}
+                  </Tooltip>
+                }
+              >
+                <Button variant="outline-secondary" size="sm" aria-label={`View collaborators for ${proj.project_name}`}>
+                  <FaUsers className="me-2" /> Team
+                </Button>
+              </OverlayTrigger>
+            </Card.Title>
+            <Card.Text className="text-muted">{proj.description || 'No description provided.'}</Card.Text>
+
+            {/* Progress Bar */}
+            <div>
+              <strong>Progress: </strong>
+              <ProgressBar now={progress} label={`${progress}%`} className="mb-2" />
+            </div>
+
+            <div className="mt-2">
+              <div>
+                <strong>Status:</strong>{' '}
+                <span className={`badge bg-${proj.status === 'active' ? 'success' : 'secondary'}`}>
+                  {proj.status.charAt(0).toUpperCase() + proj.status.slice(1)}
+                </span>
+              </div>
+              <div>
+                <strong>Created:</strong> {new Date(proj.created_at).toLocaleString()}
+              </div>
+              <div>
+                <strong>Last Updated:</strong> {new Date(proj.updated_at).toLocaleString()}
+              </div>
+            </div>
+            <div className="mt-auto d-flex justify-content-between pt-3">
+              <Button variant="outline-primary" onClick={() => navigate(`/projects/${proj.project_id}`)}>
+                <FaEye className="me-2" /> View
+              </Button>
+              <Button variant="outline-warning" onClick={() => navigate(`/projects/${proj.project_id}/edit`)}>
+                <FaEdit className="me-2" /> Edit
+              </Button>
+              <Button variant="outline-danger" onClick={() => deleteProject(proj)}>
+                <FaTrash className="me-2" /> Delete
+              </Button>
+            </div>
+          </Card.Body>
+        </Card>
+      </Col>
+    );
+  };
+
+  return (
+    <>
+      <Header />
+      <Container className="mt-5">
+        <div className="section">
+          <h1 className="mb-4">Welcome to Your Dashboard</h1>
+
+          {/* Open Projects Section */}
+          <Row className="align-items-center mb-3">
+            <Col>
+              <h2>Open Projects</h2>
+            </Col>
+            <Col className="text-end">
+              <Button variant="success" onClick={() => navigate('/projects/create')} aria-label="Create a new project">
+                <FaPlus className="me-2" /> Create New Project
+              </Button>
+            </Col>
+          </Row>
+          {openProjects.length === 0 ? (
+            <p>No open projects.</p>
+          ) : (
+            <Row xs={1} md={2} lg={3} className="g-4">
+              {openProjects.map(renderProject)}
+            </Row>
+          )}
+
+          {/* Completed Projects Section */}
+          <h2 className="mt-5">Completed Projects</h2>
+          {completedProjects.length === 0 ? (
+            <p>No completed projects.</p>
+          ) : (
+            <Row xs={1} md={2} lg={3} className="g-4">
+              {completedProjects.map(renderProject)}
+            </Row>
+          )}
+
+          {/* Your Open Tasks Section */}
+          <h2 className="mt-5">Your Open Tasks</h2>
+          {loadingTasks ? (
+            <div className="text-center">
+              <Spinner animation="border" role="status">
+                <span className="visually-hidden">Loading your tasks...</span>
+              </Spinner>
+              <p className="mt-3">Loading your tasks...</p>
+            </div>
+          ) : assignedTasks.length === 0 ? (
+            <p>You have no open tasks assigned.</p>
+          ) : (
+            <Table striped bordered hover responsive>
+              <thead>
+                <tr>
+                  <th>Task Name</th>
+                  <th>Stage</th>
+                  <th>Project</th>
+                  <th>Due Date</th>
+                  <th>Priority</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignedTasks.map((task) => (
+                  <tr key={task.task_id}>
+                    <td>{task.task_name}</td>
+                    <td>{task.stage ? task.stage.stage_name : 'N/A'}</td>
+                    <td>{task.project ? task.project.project_name : 'N/A'}</td>
+                    <td>{task.due_date ? new Date(task.due_date).toLocaleDateString() : 'N/A'}</td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          task.priority === 'High'
+                            ? 'bg-danger'
+                            : task.priority === 'Medium'
+                            ? 'bg-warning text-dark'
+                            : 'bg-info text-dark'
+                        }`}
+                      >
+                        {task.priority || 'N/A'}
+                      </span>
+                    </td>
+                    <td>{renderTaskActions(task)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
+        </div>
+      </Container>
+
+      {/* Confirm Delete Task Modal */}
+      <ConfirmModal
+        show={showDeleteTaskModal}
+        handleClose={() => setShowDeleteTaskModal(false)}
+        handleConfirm={confirmDeleteTask}
+        title="Confirm Task Deletion"
+        body={`Are you sure you want to delete the task "${taskToDelete?.task_name}"? This action cannot be undone.`}
+      />
+
+      {/* Confirm Delete Project Modal */}
+      <ConfirmModal
+        show={showDeleteProjectModal}
+        handleClose={() => setShowDeleteProjectModal(false)}
+        handleConfirm={confirmDeleteProject}
+        title="Confirm Project Deletion"
+        body={`Are you sure you want to delete the project "${projectToDelete?.project_name}"? This action cannot be undone.`}
+      />
+
+      {/* Confirm Mark Task as Complete Modal */}
+      <ConfirmModal
+        show={showCompleteTaskModal}
+        handleClose={() => setShowCompleteTaskModal(false)}
+        handleConfirm={confirmMarkTaskAsCompleted}
+        title="Confirm Task Completion"
+        body={`Are you sure you want to mark the task "${taskToComplete?.task_name}" as completed?`}
+      />
+    </>
+  );
+}
+
+export default Dashboard;
+
+--- frontend/src/context/AuthContext.js ---
+
+// src/contexts/AuthContext.js
+
+import React, { createContext, useState, useEffect } from 'react';
+
+// Create the Auth Context
+export const AuthContext = createContext();
+
+// Auth Provider Component
+export const AuthProvider = ({ children }) => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // Check for token in localStorage on mount
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (token) {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  // Login function
+  const login = (token) => {
+    localStorage.setItem('jwtToken', token);
+    setIsAuthenticated(true);
+  };
+
+  // Logout function
+  const logout = () => {
+    localStorage.removeItem('jwtToken');
+    setIsAuthenticated(false);
+  };
+
+  return (
+    <AuthContext.Provider value={{ isAuthenticated, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+--- frontend/src/context/UserContext.js ---
+
+// src/context/UserContext.js
+
+import React, { createContext, useState, useEffect } from 'react';
+import axios from 'axios';
+
+export const UserContext = createContext(null);
+
+export function UserProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const token = localStorage.getItem('jwtToken');
+    if (token) {
+      axios.get(`${process.env.REACT_APP_API_URL}/users/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((response) => {
+          // Assuming response.data contains the user object
+          setUser(response.data);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch user:', error);
+          localStorage.removeItem('jwtToken');
+        })
+        .finally(() => setLoading(false));
+    } else {
+      // No token means no user, just stop loading.
+      setLoading(false);
+    }
+  }, []);
+
+  return (
+    <UserContext.Provider value={{ user, setUser, loading }}>
+      {children}
+    </UserContext.Provider>
+  );
+}
+
+--- frontend/src/app.js ---
+
+// src/App.js
+
+import React, { useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import Register from './pages/Register';
+import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
+import Profile from './pages/Profile';
+import Projects from './pages/Projects';
+import CreateProject from './pages/CreateProject';
+import ProjectDetails from './pages/ProjectDetails';
+import CreateTaskPage from './pages/CreateTaskPage';
+import EditTaskPage from './pages/EditTaskPage';
+import DocumentsPage from './pages/DocumentsPage'; // <-- Add your DocumentsPage
+import ProtectedRoute from './components/ProtectedRoute';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+import './styles.css';
+
+// 1) Axios setup to handle token expiration gracefully
+import axios from 'axios';
+import { toast } from 'react-toastify';
+
+function setupAxiosInterceptors() {
+  axios.interceptors.response.use(
+    response => response,
+    error => {
+      // If we get a 401 or 403, it may mean token expired or unauthorized
+      if (error.response && [401, 403].includes(error.response.status)) {
+        // Avoid repeated toasts by checking a flag
+        if (!window.__expiredToastShown__) {
+          window.__expiredToastShown__ = true;
+          toast.warn('Your session has expired. Please log in again.');
+          // Force logout
+          localStorage.removeItem('jwtToken');
+          // Refresh page or redirect to login
+          window.location.href = '/login';
+        }
+      } else if (!error.response) {
+        // If it's a network error or no response
+        toast.error('Network error. Please check your connection.');
+      }
+      return Promise.reject(error);
+    }
+  );
+}
+
+function App() {
+  // 2) Set up interceptors once
+  useEffect(() => {
+    setupAxiosInterceptors();
+  }, []);
+
+  return (
+    <Router>
+      <Routes>
+        {/* Public Routes */}
+        <Route path="/register" element={<Register />} />
+        <Route path="/login" element={<Login />} />
+
+        {/* Protected Routes */}
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/projects"
+          element={
+            <ProtectedRoute>
+              <Projects />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/projects/create"
+          element={
+            <ProtectedRoute>
+              <CreateProject />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/projects/:id"
+          element={
+            <ProtectedRoute>
+              <ProjectDetails />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Task Creation Route */}
+        <Route
+          path="/projects/:id/create-task"
+          element={
+            <ProtectedRoute>
+              <CreateTaskPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Task Editing Route */}
+        <Route
+          path="/projects/:projectId/tasks/:taskId/edit"
+          element={
+            <ProtectedRoute>
+              <EditTaskPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* New Documents Route */}
+        <Route
+          path="/documents"
+          element={
+            <ProtectedRoute>
+              <DocumentsPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Root redirect based on authentication */}
+        <Route
+          path="/"
+          element={
+            localStorage.getItem('jwtToken') ? (
+              <Navigate to="/dashboard" replace />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        {/* Fallback Route */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+
+      <ToastContainer position="top-right" autoClose={5000} />
+    </Router>
+  );
+}
+
+export default App;
+
+--- frontend/src/styles.css ---
+
+/* src/styles.css */
+
+/* Define CSS Variables for the Theme */
+:root {
+  --color-primary: #1E3A8A; /* Navy Blue */
+  --color-secondary: #64748B; /* Slate Gray */
+  --color-success: #10B981; /* Emerald Green */
+  --color-danger: #EF4444; /* Crimson */
+  --color-warning: #F59E0B; /* Amber */
+  --color-info: #38BDF8; /* Sky Blue */
+  --color-light: #FFFFFF; /* White */
+  --color-dark: #1F2937; /* Charcoal */
+
+  /* Typography */
+  --font-family: 'Roboto', sans-serif;
+  --font-size-base: 1rem;
+  --font-weight-normal: 400;
+  --font-weight-bold: 600;
+
+  /* Spacing */
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 16px;
+  --spacing-4: 24px;
+  --spacing-5: 32px;
+}
+
+/* Global Styles */
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  color: var(--color-dark);
+  background-color: var(--color-light);
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-dark);
+}
+
+/* Buttons */
+.btn-primary {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.btn-primary:hover {
+  background-color: darken(var(--color-primary), 10%);
+  border-color: darken(var(--color-primary), 10%);
+}
+
+.btn-secondary {
+  background-color: var(--color-secondary);
+  border-color: var(--color-secondary);
+}
+
+.btn-secondary:hover {
+  background-color: darken(var(--color-secondary), 10%);
+  border-color: darken(var(--color-secondary), 10%);
+}
+
+/* Cards */
+.card {
+  border-radius: 8px;
+  border: 1px solid var(--color-secondary);
+  transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* Badges */
+.badge-primary {
+  background-color: var(--color-primary);
+}
+
+.badge-secondary {
+  background-color: var(--color-secondary);
+}
+
+.badge-success {
+  background-color: var(--color-success);
+}
+
+.badge-danger {
+  background-color: var(--color-danger);
+}
+
+.badge-warning {
+  background-color: var(--color-warning);
+}
+
+.badge-info {
+  background-color: var(--color-info);
+}
+
+/* Forms */
+.form-section {
+  background-color: var(--color-light);
+  padding: var(--spacing-4);
+  border: 1px solid var(--color-secondary);
+  border-radius: 8px;
+}
+
+.form-group label {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-dark);
+}
+
+.form-control, .form-select, .form-check-input {
+  border-radius: 4px;
+  border-color: var(--color-secondary);
+}
+
+.form-control:focus, .form-select:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 0.2rem rgba(30, 58, 138, 0.25); /* Primary color with opacity */
+}
+
+/* Modals */
+.modal-header {
+  background-color: var(--color-primary);
+  color: var(--color-light);
+}
+
+.modal-footer .btn-secondary {
+  background-color: var(--color-secondary);
+  border-color: var(--color-secondary);
+}
+
+.modal-footer .btn-secondary:hover {
+  background-color: darken(var(--color-secondary), 10%);
+  border-color: darken(var(--color-secondary), 10%);
+}
+
+/* Utility Classes */
+.mt-1 { margin-top: var(--spacing-1); }
+.mt-2 { margin-top: var(--spacing-2); }
+.mt-3 { margin-top: var(--spacing-3); }
+.mt-4 { margin-top: var(--spacing-4); }
+.mt-5 { margin-top: var(--spacing-5); }
+
+.mb-1 { margin-bottom: var(--spacing-1); }
+.mb-2 { margin-bottom: var(--spacing-2); }
+.mb-3 { margin-bottom: var(--spacing-3); }
+.mb-4 { margin-bottom: var(--spacing-4); }
+.mb-5 { margin-bottom: var(--spacing-5); }
+
+.ml-1 { margin-left: var(--spacing-1); }
+.ml-2 { margin-left: var(--spacing-2); }
+.ml-3 { margin-left: var(--spacing-3); }
+.ml-4 { margin-left: var(--spacing-4); }
+.ml-5 { margin-left: var(--spacing-5); }
+
+.mr-1 { margin-right: var(--spacing-1); }
+.mr-2 { margin-right: var(--spacing-2); }
+.mr-3 { margin-right: var(--spacing-3); }
+.mr-4 { margin-right: var(--spacing-4); }
+.mr-5 { margin-right: var(--spacing-5); }
+
+.p-1 { padding: var(--spacing-1); }
+.p-2 { padding: var(--spacing-2); }
+.p-3 { padding: var(--spacing-3); }
+.p-4 { padding: var(--spacing-4); }
+.p-5 { padding: var(--spacing-5); }
+
+--- frontend/src/index.js ---
+
+// src/index.js
+
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+import { AuthProvider } from './context/AuthContext';
+import { UserProvider } from './context/UserContext'; // Import UserProvider
+import 'react-toastify/dist/ReactToastify.css'; // Import React Toastify CSS
+import 'bootstrap/dist/css/bootstrap.min.css'; // Import Bootstrap CSS
+import './styles.css'; // Import global styles
+
+ReactDOM.render(
+  <React.StrictMode>
+    <AuthProvider>
+      <UserProvider> {/* Add UserProvider */}
+        <App />
+      </UserProvider>
+    </AuthProvider>
+  </React.StrictMode>,
+  document.getElementById('root')
+);

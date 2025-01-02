@@ -1,0 +1,45 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/thomasdeane/Project/New_Start/Backend/logs/.e7aeebf39f180172d594e9003851be6e835c1a4f-audit.json",
+    "files": [
+        {
+            "date": 1734623599473,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2024-12-19.log",
+            "hash": "4c487ac753fc432632c3451e0b01d03c95e11d9f4eda20b6762987a815bf5e40"
+        },
+        {
+            "date": 1734685232877,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2024-12-20.log",
+            "hash": "6204a56ecdbd4a7e5c00e8c4cc2a14f15ba87baff2331182bf3c37587bc99460"
+        },
+        {
+            "date": 1734805529922,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2024-12-21.log",
+            "hash": "9c7a7453a2939ae025a7d2e78797fae13aabb62106aee5bc1a9a3b93724544e6"
+        },
+        {
+            "date": 1734866216582,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2024-12-22.log",
+            "hash": "4c1943698c8d4b2e283fed2179138f1f1a446a0d5da5b2b71aa3383931dabffa"
+        },
+        {
+            "date": 1735551047266,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2024-12-30.log",
+            "hash": "4fee3a8b2e7f9b0090047e84eaf9ed0d7f0bbe340f7608ab501fe97dd9359218"
+        },
+        {
+            "date": 1735637012623,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2024-12-31.log",
+            "hash": "2090e6c7449f1783b292bf948f1645518d55d0fdd9cd30ff736bcb64ef8917d8"
+        },
+        {
+            "date": 1735807307016,
+            "name": "/Users/thomasdeane/Project/New_Start/Backend/logs/application-2025-01-02.log",
+            "hash": "296f9e4825e7b4d982c6c2224a854a63c5c9e8ac233c88d4b91d29181d991990"
+        }
+    ],
+    "hashType": "sha256"
+}

@@ -1,18 +1,24 @@
-const { Model, DataTypes } = require('sequelize');
-const sequelize = require('../config/database');
-
 // models/projectCollaborators.js
+// Backend/models/projectCollaborators.js
 
-module.exports = (sequelize, DataTypes) => {
-    const { Model } = require('sequelize');  // Import Model directly from Sequelize
-  
-    class ProjectCollaborators extends Model {}
-  
-    ProjectCollaborators.init({
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class ProjectCollaborator extends Model {
+    static associate(models) {
+      console.log('Associating ProjectCollaborator with Project and User');
+      this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
+      this.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+      console.log('Associations for ProjectCollaborator:', this.associations);
+    }
+  }
+
+  ProjectCollaborator.init(
+    {
       collaborator_id: {
         type: DataTypes.INTEGER,
         primaryKey: true,
-        autoIncrement: true
+        autoIncrement: true,
       },
       project_id: {
         type: DataTypes.INTEGER,
@@ -22,33 +28,25 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: false,
       },
-      role: {
-        type: DataTypes.ENUM(
-          'Buyer',
-          'Seller',
-          'Mortgage Advisor',
-          'Seller Solicitor',
-          'Buyer Solicitor',
-          'Estate Agent'
-        ),
-        allowNull: false
+      role: { 
+        type: DataTypes.INTEGER, // Store role as an integer
+        allowNull: false,
+        defaultValue: 0 // Default to Buyer (0)
       },
       assigned_at: {
         type: DataTypes.DATE,
-        defaultValue: DataTypes.NOW
-      }
-    }, {
+        defaultValue: DataTypes.NOW,
+      },
+    },
+    {
       sequelize,
-      modelName: 'ProjectCollaborators',
+      modelName: 'ProjectCollaborator',
       tableName: 'projectcollaborators',
-      timestamps: false
-    });
-  
-    // Define associations
-    ProjectCollaborators.associate = (models) => {
-      ProjectCollaborators.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
-      ProjectCollaborators.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
-    };
-  
-    return ProjectCollaborators;
-  };
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return ProjectCollaborator;
+};

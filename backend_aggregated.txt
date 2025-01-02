@@ -1,0 +1,3134 @@
+
+
+--- Backend/controllers/documentController.js ---
+
+// Backend/controllers/documentController.js
+
+const { Document, TaskDocument, User } = require('../models');
+const logger = require('../logger');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Upload a new document (file + optional tags).
+ * The file is handled by Multer (see documentRoutes.js).
+ */
+exports.uploadDocument = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // This is the hashed/extended filename we produced in the Multer storage function
+    const fileNameOnDisk = req.file.filename;  
+    // The user’s original name, e.g. "mydoc.pdf"
+    const originalName = req.file.originalname; 
+
+    // Build a full URL, so the front-end knows where to fetch/preview
+    // e.g. "http://localhost:5001/uploads/abc123.pdf"
+    const fileUrl = `http://localhost:5001/uploads/${fileNameOnDisk}`;
+
+    // Convert tags to an array if user sends one vs. multiple
+    const tags = req.body.tags
+      ? Array.isArray(req.body.tags) ? req.body.tags : [req.body.tags]
+      : [];
+
+    // Optionally fetch the user’s name for "uploaded_by"
+    const user = await User.findByPk(userId);
+    const userFullName = user
+      ? `${user.first_name || ''} ${user.last_name || ''}`.trim() || `User#${user.user_id}`
+      : `User#${userId}`;
+
+    // Create the Document record in DB
+    const doc = await Document.create({
+      owner_id: userId,
+      file_name: fileNameOnDisk,      // e.g. "abc123.pdf"
+      original_filename: originalName, // The user’s real filename
+      file_url: fileUrl, 
+      tags,
+      uploaded_by: userFullName,
+      uploaded_date: new Date(),
+    });
+
+    res.status(201).json(doc);
+  } catch (error) {
+    logger.error(`Error uploading document: ${error.message}`, error);
+    res.status(500).json({ error: 'Error uploading document' });
+  }
+};
+
+/**
+ * List all documents belonging to the current user.
+ */
+exports.getAllDocuments = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const docs = await Document.findAll({
+      where: { owner_id: userId },
+      order: [['created_at', 'DESC']],
+    });
+    res.status(200).json(docs);
+  } catch (error) {
+    logger.error(`Error fetching documents: ${error.message}`, error);
+    res.status(500).json({ error: 'Failed to fetch documents' });
+  }
+};
+
+/**
+ * Update a document's metadata (tags, original_filename, etc.).
+ * We do NOT re-upload the file in this route.
+ */
+exports.updateDocument = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { document_id } = req.params;
+    logger.info(`User ${userId} updating doc_id=${document_id} with data: ${JSON.stringify(req.body)}`);
+
+    // Attempt to find the doc
+    const doc = await Document.findOne({
+      where: { document_id, owner_id: userId },
+    });
+    if (!doc) {
+      logger.warn(`Doc not found or not owned by user: doc_id=${document_id}, user_id=${userId}`);
+      return res.status(404).json({ error: 'Document not found or not yours' });
+    }
+
+    // Extract fields user can update
+    const { tags, original_filename } = req.body;
+
+    if (tags !== undefined) {
+      let tagsArray = tags;
+      if (!Array.isArray(tags)) {
+        tagsArray = [tags];
+      }
+      doc.tags = tagsArray;
+    }
+
+    if (original_filename !== undefined) {
+      doc.original_filename = original_filename.trim();
+    }
+
+    await doc.save();
+    logger.info(`Document updated successfully: doc_id=${document_id}`);
+    res.status(200).json(doc);
+  } catch (error) {
+    logger.error(`Error updating document: ${error.message}`, error);
+    res.status(500).json({ error: 'Error updating document' });
+  }
+};
+
+/**
+ * Delete a document. Also removes references from TaskDocument.
+ */
+exports.deleteDocument = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { document_id } = req.params;
+    logger.info(`User ${userId} deleting doc_id=${document_id}`);
+
+    // Check if doc belongs to the user
+    const doc = await Document.findOne({
+      where: { document_id, owner_id: userId },
+    });
+    if (!doc) {
+      logger.warn(`Doc not found or not owned by user: doc_id=${document_id}, user_id=${userId}`);
+      return res.status(404).json({ error: 'Document not found or not yours' });
+    }
+
+    // Optionally remove the file from disk
+    // if your "file_name" is e.g. "abc123.pdf"
+    // const filePath = path.join(__dirname, '..', 'uploads', doc.file_name);
+    // if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    // Remove references in TaskDocument, if any
+    await TaskDocument.destroy({ where: { document_id: doc.document_id } });
+
+    // Finally remove the doc record
+    await doc.destroy();
+    logger.info(`Document doc_id=${document_id} deleted successfully by user ${userId}`);
+    res.status(200).json({ message: 'Document deleted successfully' });
+  } catch (error) {
+    logger.error(`Error deleting document: ${error.message}`, error);
+    res.status(500).json({ error: 'Error deleting document' });
+  }
+};
+
+--- Backend/controllers/projectController.js ---
+
+// Backend/controllers/projectController.js
+const db = require('../models');
+const { Project, Stage, User, ProjectCollaborator, Task, TaskAssignment } = db;
+const logger = require('../logger'); // Import Winston logger
+
+// Define default stages
+const defaultStages = [
+    { stage_name: 'Viewings', description: 'Initial viewings of the property', stage_order: 1 },
+    { stage_name: 'Offer Stage', description: 'Stage of making an offer on the property', stage_order: 2 },
+    { stage_name: 'Offer Accepted', description: 'Offer accepted by the seller', stage_order: 3 },
+    { stage_name: 'Legal, Surveys, & Compliance', description: 'Legal checks, surveys, and compliance checks', stage_order: 4 },
+    { stage_name: 'Mortgage Application', description: 'Processing of buyer’s mortgage application', stage_order: 5 },
+    { stage_name: 'Contract Exchange', description: 'Exchange of contracts between buyer and seller', stage_order: 6 },
+    { stage_name: 'Key Exchange', description: 'Final exchange of keys and property ownership', stage_order: 7 },
+    { stage_name: 'Misc', description: 'For any tasks outside of the standard stages', stage_order: 8, is_custom: true }
+];
+
+const defaultTasks = {
+    'Viewings': [
+        'Set criteria for your housing search',
+        'Determine your financial position - salary/savings/existing equity',
+        'Find appropriate properties through Rightmove etc.',
+        'Contact Estate Agents for further information',
+        'Book viewings',
+        'Invite your Mortgage Advisor (if you have one) to collaborate on A.I.P',
+    ],
+    'Offer Stage': [
+        'Agreement in Principal with mortgage provider',
+        'Offer',
+        'Seller\'s response to offer',
+        'Counter offer 1',
+        'Seller\'s response to counter offer 1',
+        'Counter offer 2',
+        'Seller\'s response to counter offer 2',
+    ],
+    'Offer Accepted': [
+        'Invite solicitor to collaborate on Conveyancing',
+        'Provide solicitor contact information to seller\'s estate agent for Memorandum of Sale',
+    ],
+    'Legal, Surveys, & Compliance': [
+        'Review and agree on costs with solicitor',
+        'Decide on your need for extensive or basic surveys',
+        'Confirm identity',
+        'Gifted deposit administration',
+    ],
+    'Mortgage Application': [
+        'Provide bank statements',
+        'Provide payslips',
+        'Provide proof of address',
+        'Provide proof of identity',
+        'Review affordability of mortgage payments',
+        'Confirm mortgage offer',
+    ],
+    'Contract Exchange': [
+        'Sign Mortgage offer',
+        'Sign Deed of Covenant',
+        'Agree on Chattels',
+        'Agree completion date',
+    ],
+    'Misc': [],
+};
+
+// Middleware to verify project ownership
+async function isProjectOwner(req, res, next) {
+    try {
+        const project_id = parseInt(req.params.project_id || req.params.id, 10);
+        const userId = req.user?.id;
+
+        logger.info(`Verifying ownership for project: ${project_id} by user: ${userId}`);
+
+        const project = await Project.findOne({
+            where: { project_id, owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role']
+                }
+            ]
+        });
+
+        if (!project) {
+            logger.warn(`User ${userId} does not have permission to access project ${project_id}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        logger.info(`User ${userId} verified as owner of project ${project_id}`);
+        next();
+    } catch (error) {
+        logger.error(`Error verifying project ownership: ${error.message}`, error);
+        res.status(500).json({ error: 'Error verifying project ownership' });
+    }
+}
+
+// Create Projects
+async function createProject(req, res) {
+    try {
+        const { project_name, description, start_date, end_date, status, user_role } = req.body;
+        const owner_id = req.user?.id;
+
+        if (!owner_id) {
+            logger.warn("Owner ID is missing or invalid.");
+            return res.status(400).json({ error: "Owner ID is missing or invalid." });
+        }
+
+        if (user_role === undefined || (user_role !== 0 && user_role !== 1)) {
+            logger.warn(`Invalid user_role: ${user_role}`);
+            return res.status(400).json({ error: "Invalid user_role. Must be 0 (Buyer) or 1 (Seller)." });
+        }
+
+        const project = await Project.create({
+            project_name,
+            description,
+            start_date,
+            end_date,
+            status: status || 'active',
+            owner_id,
+        });
+
+        logger.info(`Project created successfully: ${project.project_id} by user_id: ${owner_id}`);
+
+        await ProjectCollaborator.create({
+            project_id: project.project_id,
+            user_id: owner_id,
+            role: user_role,
+        });
+
+        logger.info(`Owner assigned as collaborator with role: ${user_role}`);
+
+        const stagesToAdd = defaultStages.map(stage => ({
+            ...stage,
+            project_id: project.project_id,
+            created_at: new Date(),
+            updated_at: new Date(),
+        }));
+
+        const stages = await Stage.bulkCreate(stagesToAdd, { returning: true });
+        logger.info(`Default stages created for project_id: ${project.project_id}`);
+
+
+        const thirtyDaysLater = new Date();
+        thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+
+        const tasks = stages.flatMap(stage => {
+            const stageTasks = defaultTasks[stage.stage_name];
+            if (!stageTasks) {
+                logger.warn(`No tasks defined for stage: ${stage.stage_name}`);
+                return [];
+            }
+
+            return stageTasks.map(taskName => ({
+                task_name: taskName,
+                stage_id: stage.stage_id,
+                project_id: project.project_id,
+                owner_id: owner_id,
+                created_at: new Date(),
+                updated_at: new Date(),
+                due_date: thirtyDaysLater,    // Set default due date 30 days later
+                priority: 'Medium',           // Set default priority to Medium
+            }));
+        });
+
+        if (tasks.length > 0) {
+            await Task.bulkCreate(tasks);
+            logger.info(`Default tasks created for project_id: ${project.project_id}`);
+        }
+
+        res.status(201).json({
+            message: 'Project, default stages, and tasks created successfully',
+            project,
+        });
+    } catch (error) {
+        logger.error(`Error in createProject: ${error.message}`, error);
+        res.status(500).json({ error: 'Error creating project' });
+    }
+}
+
+// Get projects by authenticated user
+// Backend/controllers/projectController.js
+
+async function getProjectsByUserId(req, res) {
+    logger.info(`Fetching projects for user: ${req.user.id}`);
+
+    try {
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            logger.error(`Invalid user ID: ${req.user.id}`);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+
+        // Fetch projects owned by the user with detailed collaborator info
+        const ownedProjects = await Project.findAll({
+            where: { owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                        },
+                    ],
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+                    include: [
+                        {
+                            model: Task,
+                            as: 'tasks',
+                            attributes: [
+                                'task_id',
+                                'created_at',
+                                'updated_at',
+                                'task_name',
+                                'description',
+                                'due_date',
+                                'priority',
+                                'is_completed',
+                                'owner_id',
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+
+        logger.info(`Owned projects retrieved: ${ownedProjects.length}`);
+
+        // Fetch projects where the user is a collaborator with detailed user info
+        const collaboratorProjects = await Project.findAll({
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    where: { user_id: userId },
+                    required: true,
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                        },
+                    ],
+                },
+            ],
+            // Exclude projects already fetched as owned projects to prevent duplication
+            where: {
+                owner_id: { [db.Sequelize.Op.ne]: userId }, // Assuming 'db' is imported and Sequelize is accessible
+            },
+            includeIgnoreAttributes: false, // Ensure all includes are processed
+        });
+
+        logger.info(`Collaborator projects retrieved: ${collaboratorProjects.length}`);
+
+        // Combine owned and collaborator projects
+        const allProjects = [...ownedProjects, ...collaboratorProjects];
+
+        // Remove duplicate projects based on project_id
+        const uniqueProjectsMap = new Map();
+        allProjects.forEach((project) => {
+            uniqueProjectsMap.set(project.project_id, project);
+        });
+        const uniqueProjects = Array.from(uniqueProjectsMap.values());
+
+        logger.info(`Unique projects retrieved: ${uniqueProjects.length}`);
+
+        res.status(200).json(uniqueProjects);
+    } catch (error) {
+        logger.error(`Error in getProjectsByUserId: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch user projects', details: error.message });
+    }
+}
+
+// Get all projects
+async function getAllProjects(req, res) {
+    try {
+        logger.info('Fetching all projects...');
+        const projects = await Project.findAll({
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role'],
+                    required: false,
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+                    required: false,
+                },
+            ],
+        });
+        logger.info(`Found ${projects.length} projects.`);
+        res.status(200).json(projects);
+    } catch (error) {
+        logger.error(`Error in getAllProjects: ${error.message}`, error);
+        res.status(500).json({ error: 'Error retrieving all projects', details: error.message });
+    }
+}
+
+// Get project by ID
+async function getProjectById(req, res) {
+    try {
+        const projectId = parseInt(req.params.id, 10);
+        if (isNaN(projectId)) {
+            logger.warn(`Invalid project ID: ${req.params.id}`);
+            return res.status(400).json({ error: "Invalid project ID" });
+        }
+
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            logger.warn(`Invalid user ID: ${req.user.id}`);
+            return res.status(400).json({ error: "Invalid user ID" });
+        }
+
+        // Fetch the project and include collaborators to check access
+        const project = await Project.findOne({
+            where: { project_id: projectId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                    }],
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+                    include: [
+                        {
+                            model: Task,
+                            as: 'tasks',
+                            attributes: ['task_id', 'task_name', 'description', 'due_date', 'priority', 'is_completed', 'owner_id'],
+                            include: [
+                                {
+                                    model: User,
+                                    as: 'assigned_users',
+                                    attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                                    through: {
+                                        attributes: ['can_view', 'can_edit'],
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+
+        if (!project) {
+            logger.warn(`Project not found for ID: ${projectId}`);
+            return res.status(404).json({ error: "Project not found" });
+        }
+
+        // Check if the requesting user is the owner or a collaborator
+        const isOwner = project.owner_id === userId;
+        const isCollaborator = project.collaborators.some(collab => collab.user_id === userId);
+
+        if (!isOwner && !isCollaborator) {
+            logger.warn(`User ${userId} is not authorized to access project ${projectId}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        // Optionally, you can remove sensitive information or structure the response as needed
+        logger.info(`Project retrieved successfully: ${projectId} by user ${userId}`);
+        res.status(200).json(project);
+    } catch (error) {
+        logger.error(`Error in getProjectById: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving project" });
+    }
+}
+
+// Update project
+async function updateProject(req, res) {
+    try {
+        const { id } = req.params;
+        const { project_name, description, start_date, end_date, status } = req.body;
+        const ownerId = req.user?.id;
+
+        if (!ownerId) {
+            logger.warn("Unauthorized: Owner ID is required");
+            return res.status(401).json({ error: "Unauthorized: Owner ID is required" });
+        }
+
+        logger.info(`Updating project with ID: ${id} for user ID: ${ownerId}`);
+
+        const project = await Project.findOne({
+            where: { project_id: id, owner_id: ownerId },
+        });
+
+        if (!project) {
+            logger.warn("Project not found or unauthorized access.");
+            return res.status(404).json({ error: "Project not found or unauthorized access" });
+        }
+
+        const updatedProject = await project.update({
+            project_name,
+            description,
+            start_date,
+            end_date,
+            status,
+        });
+
+        logger.info(`Project updated successfully: ${updatedProject.project_id}`);
+        res.status(200).json({ message: "Project updated successfully", project: updatedProject });
+    } catch (error) {
+        logger.error(`Error in updateProject: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating project", details: error.message });
+    }
+}
+
+// Add Collaborator
+async function addCollaborator(req, res) {
+    try {
+        logger.info(`Request Params: ${JSON.stringify(req.params)}`);
+        logger.info(`Request Body: ${JSON.stringify(req.body)}`);
+
+        const { id: project_id } = req.params;
+        let { email, role } = req.body;
+
+        if (!project_id) {
+            logger.error("Invalid or missing project_id in request parameters.");
+            return res.status(400).json({ error: "Invalid or missing project_id in request parameters." });
+        }
+
+        const collaborator = await User.findOne({ where: { email } });
+
+        if (!collaborator) {
+            logger.error(`Collaborator not found for email: ${email}`);
+            return res.status(404).json({ error: 'Collaborator not found' });
+        }
+
+        const existingCollaboration = await ProjectCollaborator.findOne({
+            where: { project_id, user_id: collaborator.user_id },
+        });
+
+        if (existingCollaboration) {
+            logger.warn('User is already a collaborator on this project.');
+            return res.status(400).json({ error: 'User is already a collaborator on this project' });
+        }
+
+        const parsedRole = parseInt(role, 10);
+        if (isNaN(parsedRole)) {
+            logger.error(`Invalid integer role supplied: ${role}`);
+            return res.status(400).json({ error: 'Invalid role supplied. Must be an integer.' });
+        }
+
+        const newCollaboration = await ProjectCollaborator.create({
+            project_id,
+            user_id: collaborator.user_id,
+            role: parsedRole,
+        });
+
+        logger.info(`Collaborator added successfully: ${JSON.stringify(newCollaboration)}`);
+        res.status(201).json({
+            message: 'Collaborator added successfully',
+            collaboration: newCollaboration,
+        });
+    } catch (error) {
+        logger.error(`Error in addCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: 'Error adding collaborator', details: error.message });
+    }
+}
+
+// Get Collaborators
+async function getCollaborators(req, res) {
+    try {
+        const { id } = req.params; // 'id' is the project_id
+        const collaborators = await ProjectCollaborator.findAll({
+            where: { project_id: id },
+            include: [{
+                model: User,
+                as: 'user',
+                attributes: ['user_id', 'first_name', 'last_name', 'email'],
+            }],
+        });
+        logger.info(`Collaborators retrieved for project ID ${id}: ${collaborators.length}`);
+        res.status(200).json(collaborators);
+    } catch (error) {
+        logger.error(`Error in getCollaborators: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving collaborators" });
+    }
+}
+
+// Get Stages
+async function getStages(req, res) {
+    try {
+        const { project_id } = req.params;
+        const stages = await Stage.findAll({ where: { project_id } });
+        logger.info(`Stages retrieved for project_id ${project_id}: ${stages.length}`);
+        res.status(200).json(stages);
+    } catch (error) {
+        logger.error(`Error in getStages: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving stages" });
+    }
+}
+
+// Get Stage By ID
+async function getStageById(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+        logger.info(`Fetching stage with project_id: ${project_id} and stage_id: ${stage_id}`);
+
+        const stage = await Stage.findOne({
+            where: {
+                project_id: parseInt(project_id, 10),
+                stage_id: parseInt(stage_id, 10)
+            }
+        });
+
+        if (!stage) {
+            logger.warn(`Stage not found for project_id: ${project_id} and stage_id: ${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage found: ${stage.stage_id} in project ${project_id}`);
+        res.status(200).json(stage);
+    } catch (error) {
+        logger.error(`Error in getStageById: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving stage" });
+    }
+}
+
+// Create Stage
+async function createStage(req, res) {
+    try {
+        const { project_id } = req.params;
+        const { stage_name, description, stage_order } = req.body;
+
+        const newStage = await Stage.create({
+            project_id,
+            stage_name,
+            description,
+            stage_order,
+            is_custom: true
+        });
+
+        logger.info(`Custom stage created successfully: ${newStage.stage_id} in project ${project_id}`);
+        res.status(201).json({ message: 'Custom stage created successfully', stage: newStage });
+    } catch (error) {
+        logger.error(`Error in createStage: ${error.message}`, error);
+        res.status(500).json({ error: "Error creating stage" });
+    }
+}
+
+// Update Stage
+async function updateStage(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+        const { stage_name, description, stage_order } = req.body;
+
+        logger.info(`Updating stage with ID: ${stage_id} in project: ${project_id}`);
+
+        const [updated] = await Stage.update(
+            { stage_name, description, stage_order },
+            { where: { project_id, stage_id, is_custom: true } }
+        );
+
+        if (!updated) {
+            logger.warn(`Stage not found or unauthorized for update: project_id=${project_id}, stage_id=${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage updated successfully: ${stage_id} in project ${project_id}`);
+        res.json({ message: 'Stage updated successfully' });
+    } catch (error) {
+        logger.error(`Error in updateStage: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating stage" });
+    }
+}
+
+// Delete Stage
+async function deleteStage(req, res) {
+    try {
+        const { project_id, stage_id } = req.params;
+
+        logger.info(`Deleting stage with ID: ${stage_id} from project: ${project_id}`);
+
+        const deleted = await Stage.destroy({
+            where: { project_id, stage_id, is_custom: true }
+        });
+
+        if (!deleted) {
+            logger.warn(`Stage not found or unauthorized for deletion: project_id=${project_id}, stage_id=${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage deleted successfully: ${stage_id} from project ${project_id}`);
+        res.json({ message: 'Stage deleted successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteStage: ${error.message}`, error);
+        res.status(500).json({ error: "Error deleting stage" });
+    }
+}
+
+// Update Collaborator
+async function updateCollaborator(req, res) {
+    try {
+        const { id: project_id, collaborator_id } = req.params;
+        const { role } = req.body;
+
+        logger.info(`Updating collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}, role=${role}`);
+
+        if (!project_id || !collaborator_id) {
+            logger.error("Missing project_id or collaborator_id.");
+            return res.status(400).json({ error: "Missing project_id or collaborator_id." });
+        }
+
+        const parsedRole = parseInt(role, 10);
+        if (isNaN(parsedRole)) {
+            logger.error(`Invalid or missing integer role: ${role}`);
+            return res.status(400).json({ error: "Invalid or missing integer role in request body." });
+        }
+
+        logger.info(`Updating collaborator with: project_id=${project_id}, collaborator_id=${collaborator_id}, parsedRole=${parsedRole}`);
+
+        const [updated] = await ProjectCollaborator.update(
+            { role: parsedRole },
+            { where: { project_id, collaborator_id } }
+        );
+
+        if (!updated) {
+            logger.warn("Collaborator not found or unauthorized.");
+            return res.status(404).json({ error: "Collaborator not found or unauthorized" });
+        }
+
+        logger.info("Collaborator role updated successfully.");
+        res.json({ message: "Collaborator role updated successfully" });
+    } catch (error) {
+        logger.error(`Error in updateCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating collaborator" });
+    }
+}
+
+// Delete Collaborator
+async function deleteCollaborator(req, res) {
+    try {
+        const { id, collaborator_id } = req.params; // 'id' is project_id
+        const project_id = parseInt(id, 10);
+        const collaborator_id_int = parseInt(collaborator_id, 10);
+
+        logger.info(`Deleting collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}`);
+
+        if (isNaN(project_id) || isNaN(collaborator_id_int)) {
+            logger.warn('Invalid project_id or collaborator_id provided.');
+            return res.status(400).json({ error: 'Invalid project ID or collaborator ID.' });
+        }
+
+        // Find the collaborator entry
+        const collaborator = await ProjectCollaborator.findOne({
+            where: {
+                project_id,
+                collaborator_id: collaborator_id_int,
+            },
+        });
+
+        if (!collaborator) {
+            logger.warn(`Collaborator with ID ${collaborator_id_int} not found in project ${project_id}.`);
+            return res.status(404).json({ error: 'Collaborator not found for this project.' });
+        }
+
+        // Check for ongoing task assignments
+        const ongoingTasks = await Task.findAll({
+            where: {
+                project_id,
+                is_completed: false,
+            },
+            include: [
+                {
+                    model: TaskAssignment,
+                    as: 'taskAssignments', // Ensure this matches your Task model association
+                    where: {
+                        user_id: collaborator.user_id,
+                    },
+                    required: true,
+                },
+            ],
+        });
+
+        if (ongoingTasks.length > 0) {
+            logger.warn(`Collaborator ID ${collaborator.user_id} has ongoing tasks in project ${project_id}.`);
+            return res.status(400).json({
+                error: 'Cannot remove collaborator with ongoing task assignments.',
+            });
+        }
+
+        // Proceed to delete the collaborator
+        await collaborator.destroy();
+
+        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id_int} from project_id=${project_id}`);
+        res.json({ message: 'Collaborator removed successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: 'Error removing collaborator' });
+    }
+}
+
+// Delete Project
+async function deleteProject(req, res) {
+    try {
+        const { id } = req.params;
+        logger.info(`Deleting project with ID: ${id} by user ID: ${req.user?.id}`);
+
+        const deleted = await Project.destroy({ where: { project_id: id, owner_id: req.user?.id } });
+        if (!deleted) {
+            logger.warn(`Project not found or unauthorized for deletion: project_id=${id}`);
+            return res.status(404).json({ error: 'Project not found or unauthorized' });
+        }
+        logger.info(`Project deleted successfully: project_id=${id}`);
+        res.json({ message: 'Project deleted successfully' });
+    } catch (error) {
+        logger.error(`Error in deleteProject: ${error.message}`, error);
+        res.status(500).json({ error: 'Error deleting project' });
+    }
+}
+
+// Testing start
+const testProjectCollaboratorsAssociation = async (req, res) => {
+    try {
+        const collaborators = await ProjectCollaborator.findAll({
+            include: [
+                {
+                    model: Project,
+                    as: 'project'
+                }
+            ]
+        });
+
+        logger.info(`Testing ProjectCollaborators association: Retrieved ${collaborators.length} collaborators.`);
+        res.status(200).json(collaborators);
+    } catch (error) {
+        logger.error(`Error in testProjectCollaboratorsAssociation: ${error.message}`, error);
+        res.status(500).json({ error: "Error testing ProjectCollaborators association" });
+    }
+};
+// Testing stop
+
+module.exports = {
+    createProject,
+    getAllProjects,
+    getProjectsByUserId,
+    getCollaborators,
+    addCollaborator,
+    getStages,
+    getStageById,
+    createStage,
+    updateStage,
+    deleteStage,
+    getProjectById,
+    updateProject,
+    updateCollaborator,
+    deleteCollaborator,
+    deleteProject,
+    isProjectOwner,
+    testProjectCollaboratorsAssociation,
+};
+
+--- Backend/controllers/companyController.js ---
+
+// Backend/controllers/companyController.js
+const { Company, User } = require('../models');
+const logger = require('../logger'); // Import Winston logger
+
+// Create a new company
+const createCompany = async (req, res) => {
+    try {
+        const { company_name, company_email } = req.body;
+
+        // Retrieve the logged-in user's ID from the `req.user` object
+        const userId = req.user?.id;
+
+        if (!company_name || !company_email) {
+            logger.warn('Missing required fields: company_name or company_email');
+            return res.status(400).json({ error: 'Missing required fields: company_name or company_email' });
+        }
+
+        logger.info(`Creating or validating Company: ${company_name}`);
+
+        // Check if the company already exists
+        const existingCompany = await Company.findOne({ where: { company_name } });
+
+        if (existingCompany) {
+            logger.warn(`Company "${company_name}" already exists`);
+            return res.status(409).json({ error: 'Company already exists' });
+        }
+
+        // Create a new company
+        const newCompany = await Company.create({ company_name, company_email });
+        logger.info(`Company created successfully: ${newCompany.company_id} (${company_name})`);
+
+        // Associate the logged-in user with the company
+        if (userId) {
+            const user = await User.findByPk(userId);
+            if (user) {
+                await user.update({ company_id: newCompany.company_id });
+                logger.info(`User ID ${userId} associated with company ID ${newCompany.company_id}`);
+            } else {
+                logger.warn(`User ID ${userId} not found.`);
+            }
+        } else {
+            logger.warn('No user ID provided in request.');
+        }
+
+        res.status(201).json({ message: 'Company created successfully', company: newCompany });
+    } catch (error) {
+        logger.error(`Error creating company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to create company', details: error.message });
+    }
+};
+
+// Get all companies
+const getAllCompanies = async (req, res) => {
+    try {
+        logger.info('Fetching all companies');
+
+        const companies = await Company.findAll({
+            attributes: ['company_id', 'company_name'], // Fetch minimal data for autocomplete
+            order: [['company_name', 'ASC']],
+        });
+
+        if (!companies.length) {
+            logger.warn('No companies found in the database.');
+            return res.status(404).json({ message: 'No companies found' });
+        }
+
+        logger.info(`Companies retrieved successfully: ${companies.length} companies found.`);
+        res.status(200).json(companies);
+    } catch (error) {
+        logger.error(`Error fetching companies: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch companies', details: error.message });
+    }
+};
+
+// Get a company by ID
+const getCompanyById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Fetching company with ID: ${id}`);
+
+        const company = await Company.findByPk(id);
+        if (!company) {
+            logger.warn(`Company with ID ${id} not found.`);
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        logger.info(`Company retrieved successfully: ${id}`);
+        res.status(200).json(company);
+    } catch (error) {
+        logger.error(`Error fetching company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch company' });
+    }
+};
+
+// Update a company by ID
+const updateCompany = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { company_name, company_email } = req.body;
+
+        logger.info(`Updating company with ID: ${id}`);
+
+        const company = await Company.findByPk(id);
+        if (!company) {
+            logger.warn(`Company with ID ${id} not found.`);
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        const updatedCompany = await company.update({ company_name, company_email });
+        logger.info(`Company updated successfully: ${id}`);
+        res.status(200).json(updatedCompany);
+    } catch (error) {
+        logger.error(`Error updating company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to update company' });
+    }
+};
+
+// Delete a company by ID
+const deleteCompany = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        logger.info(`Deleting company with ID: ${id}`);
+
+        const company = await Company.findByPk(id);
+        if (!company) {
+            logger.warn(`Company with ID ${id} not found.`);
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        await company.destroy();
+        logger.info(`Company with ID ${id} deleted successfully.`);
+        res.status(200).json({ message: 'Company deleted successfully' });
+    } catch (error) {
+        logger.error(`Error deleting company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to delete company' });
+    }
+};
+
+// Get users associated with a specific company by company ID
+const getUsersByCompanyId = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Fetching users for company ID: ${id}`);
+
+        // Fetch users associated with the company
+        const users = await User.findAll({
+            where: { company_id: id },
+            attributes: ['user_id', 'username', 'email', 'first_name', 'last_name'], // Select specific fields
+        });
+
+        if (!users.length) {
+            logger.warn(`No users found for company ID: ${id}`);
+            return res.status(404).json({ message: 'No users found for this company' });
+        }
+
+        logger.info(`Users retrieved successfully for company ID ${id}: ${users.length} users found.`);
+        res.status(200).json({ message: 'Users retrieved successfully', users });
+    } catch (error) {
+        logger.error(`Error fetching users for company: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch users for company', details: error.message });
+    }
+};
+
+module.exports = {
+    createCompany,
+    getAllCompanies,
+    getCompanyById,
+    updateCompany,
+    deleteCompany,
+    getUsersByCompanyId, // Ensure export
+};
+
+--- Backend/controllers/userController.js ---
+
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const db = require('../models');
+const { User, Company } = db;
+const logger = require('../logger'); // Import Winston logger
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key'; // Use environment variable
+
+// Controller function to create a user
+// Backend/controllers/userController.js
+
+// Controller function to create a user
+// Backend/controllers/userController.js
+
+const createUser = async (req, res) => {
+    try {
+        const { username, email, password, first_name, last_name } = req.body;
+
+        // Log the incoming request data for debugging
+        logger.debug(`Received data for new user: ${JSON.stringify({ username, email, first_name, last_name })}`);
+
+        // Validate required fields
+        if (!username || !email || !password || !first_name || !last_name) {
+            logger.warn('Missing required fields: username, email, password, first_name, or last_name');
+            return res.status(400).json({ error: 'Missing required fields: username, email, password, first_name, or last_name' });
+        }
+
+        logger.info(`Creating user: ${email}`);
+
+        // Create the user with all necessary fields
+        const newUser = await User.create({
+            username,
+            email,
+            password_hash: password, // Pass plaintext password; model's hook will hash it
+            first_name,
+            last_name,
+        });
+
+        logger.info(`User created successfully: user_id=${newUser.user_id}`);
+        res.status(201).json({ message: 'User created successfully', user: newUser });
+    } catch (error) {
+        logger.error(`Error creating user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to create user', details: error.message });
+    }
+};
+
+module.exports = { createUser };
+
+// Controller function to retrieve all users
+const getAllUsers = async (req, res) => {
+    try {
+        logger.info('Request received at /getAll');
+
+        const users = await User.findAll({
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details
+            },
+        });
+
+        if (!users.length) {
+            logger.warn('No users found in the database.');
+            return res.status(404).json({ message: 'No users found' });
+        }
+
+        logger.info(`Users retrieved successfully: ${users.length} users found.`);
+        res.status(200).json({ message: 'Users retrieved successfully', users });
+    } catch (error) {
+        logger.error(`Error retrieving users: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to retrieve users', details: error.message });
+    }
+};
+
+// Get user by ID
+const getUserById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Fetching user with ID: ${id}`);
+
+        const user = await User.findByPk(id, {
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details
+            },
+        });
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found`);
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        logger.info(`User retrieved successfully: ${id}`);
+        res.status(200).json(user);
+    } catch (error) {
+        logger.error(`Error in getUserById: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to retrieve user', details: error.message });
+    }
+};
+
+// Get a user by token
+const getUserDetails = async (req, res) => {
+    try {
+        const userId = req.user.id; // Extract the user ID from the token (authMiddleware adds `req.user`)
+        logger.info(`Fetching user details for user ID: ${userId}`);
+
+        const user = await User.findByPk(userId, {
+            attributes: ['user_id', 'username', 'email', 'first_name', 'last_name', 'company_id'], // Select relevant fields
+            include: {
+                model: Company,
+                as: 'company',
+                attributes: ['company_id', 'company_name'], // Include company details if needed
+            },
+        });
+
+        if (!user) {
+            logger.warn(`User with ID ${userId} not found`);
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        logger.info(`User details retrieved successfully for user ID: ${userId}`);
+        res.status(200).json(user);
+    } catch (error) {
+        logger.error(`Error in getUserDetails: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch user details' });
+    }
+};
+
+// Controller function to update a user by ID
+const updateUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Request received to update user with ID: ${id} and body: ${JSON.stringify(req.body)}`);
+
+        const { company_id, company_name, ...updateFields } = req.body;
+
+        const user = await User.findByPk(id);
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found for update.`);
+            return res.status(404).json({ message: `User with ID ${id} not found` });
+        }
+
+        // Handle company association updates
+        let companyId = company_id || user.company_id;
+
+        if (company_name) {
+            const existingCompany = await Company.findOne({ where: { company_name } });
+            if (existingCompany) {
+                companyId = existingCompany.company_id;
+                logger.info(`Using existing company: ${company_name} with ID: ${companyId}`);
+            } else {
+                const newCompany = await Company.create({ company_name });
+                companyId = newCompany.company_id;
+                logger.info(`Created new company: ${company_name} with ID: ${companyId}`);
+            }
+        }
+
+        const updatedUser = await user.update({ ...updateFields, company_id: companyId });
+
+        logger.info(`User updated successfully: ${id}`);
+        res.status(200).json({ message: 'User updated successfully', user: updatedUser });
+    } catch (error) {
+        logger.error(`Error updating user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to update user', details: error.message });
+    }
+};
+
+// Controller function to delete a user by ID
+const deleteUser = async (req, res) => {
+    try {
+        const { id } = req.params;
+        logger.info(`Request received to delete user with ID: ${id}`);
+
+        const user = await User.findByPk(id);
+
+        if (!user) {
+            logger.warn(`User with ID ${id} not found for deletion.`);
+            return res.status(404).json({ message: `User with ID ${id} not found` });
+        }
+
+        await user.destroy();
+        logger.info(`User with ID ${id} deleted successfully.`);
+        res.status(200).json({ message: `User with ID ${id} deleted successfully` });
+    } catch (error) {
+        logger.error(`Error deleting user: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to delete user', details: error.message });
+    }
+};
+
+module.exports = {
+    createUser,
+    getAllUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    getUserDetails,
+};
+
+--- Backend/controllers/taskController.js ---
+
+// Backend/controllers/taskController.js
+
+const { Op } = require('sequelize');
+const {
+  Task,
+  Project,
+  Stage,
+  TaskAssignment,
+  User,
+  Document,      // <-- ADDED
+  TaskDocument,  // <-- ADDED
+} = require('../models');
+const logger = require('../logger'); // Import Winston logger
+
+//
+// HELPER FUNCTIONS
+//
+
+// Helper function to set assigned users
+async function setTaskAssignments(task_id, assignedUserIds) {
+  // Remove existing assignments for this task
+  await TaskAssignment.destroy({ where: { task_id } });
+
+  if (!assignedUserIds || assignedUserIds.length === 0) return;
+
+  // Create new assignments
+  const assignments = assignedUserIds.map(user_id => ({
+    task_id,
+    user_id,
+    can_view: true,
+    can_edit: false,
+  }));
+
+  await TaskAssignment.bulkCreate(assignments);
+}
+
+// Helper function to set documents (many-to-many via TaskDocument)
+async function setTaskDocuments(task_id, documentIds) {
+  // Remove existing references for this task
+  await TaskDocument.destroy({ where: { task_id } });
+
+  if (!documentIds || documentIds.length === 0) return;
+
+  // Create new references
+  const refs = documentIds.map(docId => ({
+    task_id,
+    document_id: docId,
+  }));
+
+  await TaskDocument.bulkCreate(refs);
+}
+
+//
+// CONTROLLERS
+//
+
+// Create a new task
+async function createTask(req, res) {
+  try {
+    const {
+      project_id,
+      stage_id,
+      task_name,
+      description,
+      due_date,
+      priority,
+      assigned_users,
+      documents, // ADDED: array of document IDs from the frontend
+    } = req.body;
+    const userId = req.user.id;
+
+    logger.info(
+      `User ${userId} is creating a task in project ${project_id}, stage ${stage_id} with data: ${JSON.stringify(
+        req.body
+      )}`
+    );
+
+    const project = await Project.findByPk(project_id);
+    if (!project) {
+      logger.warn(`Project not found: project_id=${project_id}`);
+      return res.status(400).json({ error: 'Project not found.' });
+    }
+
+    const stage = await Stage.findOne({ where: { stage_id, project_id } });
+    if (!stage) {
+      logger.warn(
+        `Stage not found or does not belong to project: stage_id=${stage_id}, project_id=${project_id}`
+      );
+      return res
+        .status(400)
+        .json({ error: 'Stage not found for the given project.' });
+    }
+
+    const finalDueDate = due_date && due_date.trim() !== '' ? due_date : null;
+
+    // Create the core task
+    const task = await Task.create({
+      project_id,
+      stage_id,
+      task_name,
+      description,
+      due_date: finalDueDate,
+      priority,
+      owner_id: userId,
+    });
+
+    logger.info(`Task created successfully: ${task.task_id} by user_id: ${userId}`);
+
+    // Assign users if any
+    if (Array.isArray(assigned_users)) {
+      await setTaskAssignments(task.task_id, assigned_users);
+    }
+
+    // Link documents if provided
+    if (Array.isArray(documents)) {
+      await setTaskDocuments(task.task_id, documents);
+    }
+
+    // Refetch the task including assigned_users and documents
+    const updatedTask = await Task.findByPk(task.task_id, {
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_view', 'can_edit'] },
+        },
+        {
+          model: Document,
+          as: 'documents',
+          attributes: ['document_id', 'file_name', 'file_url', 'tags'],
+          through: { attributes: [] }, // no extra join table attributes
+        },
+      ],
+    });
+
+    res.status(201).json({ message: 'Task created successfully', task: updatedTask });
+  } catch (error) {
+    logger.error(`Error in createTask: ${error.message}`, error);
+    res.status(500).json({ error: 'Error creating task' });
+  }
+}
+
+// Retrieve a specific task
+async function getTaskById(req, res) {
+  try {
+    const { task_id } = req.params;
+    const userId = req.user.id;
+
+    logger.info(`User ${userId} is fetching task with ID: ${task_id}`);
+
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id: ${task_id}`);
+      return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
+    }
+
+    const task = await Task.findByPk(parsedTaskId, {
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id', 'first_name', 'last_name', 'email'],
+          through: {
+            attributes: ['can_view', 'can_edit'],
+          },
+        },
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['user_id', 'first_name', 'last_name', 'email'],
+        },
+        {
+          model: Stage,
+          as: 'stage',
+          attributes: ['stage_id', 'stage_name'],
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['project_id', 'project_name'],
+        },
+        // ADD documents if you want them in the single-task fetch
+        {
+          model: Document,
+          as: 'documents',
+          attributes: ['document_id', 'file_name', 'file_url', 'tags'],
+          through: { attributes: [] },
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(`Task not found: ${parsedTaskId}`);
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    const hasFullAccess =
+      task.owner_id === userId ||
+      (task.assigned_users && task.assigned_users.some(u => u.user_id === userId));
+
+    // If user isn't the owner/assignee, restrict data
+    const responseData = hasFullAccess
+      ? task
+      : { task_name: task.task_name, is_completed: task.is_completed };
+
+    logger.info(`Task retrieved successfully: ${parsedTaskId} for user ${userId}`);
+    res.status(200).json(responseData);
+  } catch (error) {
+    logger.error(`Error in getTaskById: ${error.message}`, error);
+    res.status(500).json({ error: 'Error retrieving task' });
+  }
+}
+
+// GET all tasks for which you are assigned or owner
+async function getTasksByUser(req, res) {
+  try {
+    const userId = req.user.id;
+    logger.info(`Fetching all tasks for user: ${userId}`);
+
+    const tasks = await Task.findAll({
+      where: {
+        [Op.or]: [{ owner_id: userId }, { '$assigned_users.user_id$': userId }],
+      },
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: {
+            attributes: ['can_view', 'can_edit'],
+          },
+        },
+        {
+          model: Stage,
+          as: 'stage',
+          attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['project_id', 'project_name'],
+        },
+      ],
+    });
+
+    logger.info(`Tasks retrieved for user ${userId}: ${tasks.length}`);
+    res.status(200).json(tasks);
+  } catch (error) {
+    logger.error(`Error in getTasksByUser: ${error.message}`, error);
+    res.status(500).json({ error: 'Error fetching tasks' });
+  }
+}
+
+// Update task
+async function updateTask(req, res) {
+  try {
+    const { task_id } = req.params;
+    const userId = req.user.id;
+    const {
+      project_id,
+      stage_id,
+      task_name,
+      description,
+      due_date,
+      priority,
+      is_completed,
+      assigned_users,
+      documents, // ADDED: array of doc IDs
+    } = req.body;
+
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id provided: ${task_id}`);
+      return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
+    }
+
+    logger.info(
+      `User ${userId} is attempting to update task_id: ${parsedTaskId} with data: ${JSON.stringify(
+        req.body
+      )}`
+    );
+
+    const task = await Task.findOne({
+      where: {
+        task_id: parsedTaskId,
+        [Op.or]: [
+          { owner_id: userId },
+          {
+            '$assigned_users.TaskAssignment.can_edit$': true,
+            '$assigned_users.user_id$': userId,
+          },
+        ],
+      },
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_edit'] },
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(
+        `Task not found or insufficient permissions for task_id: ${parsedTaskId}`
+      );
+      return res
+        .status(404)
+        .json({ error: 'Task not found or insufficient permissions' });
+    }
+
+    // If project_id/stage_id changed, validate them
+    if (project_id || stage_id) {
+      const parsedProjectId = project_id ? parseInt(project_id, 10) : task.project_id;
+      const parsedStageId = stage_id ? parseInt(stage_id, 10) : task.stage_id;
+
+      if (isNaN(parsedProjectId) || isNaN(parsedStageId)) {
+        logger.warn(`Invalid project_id: ${project_id} or stage_id: ${stage_id}`);
+        return res
+          .status(400)
+          .json({ error: 'Invalid project_id or stage_id. Both must be integers.' });
+      }
+
+      const project = await Project.findByPk(parsedProjectId);
+      if (!project) {
+        logger.warn(`Project not found: project_id=${parsedProjectId}`);
+        return res.status(400).json({ error: 'Project not found.' });
+      }
+
+      const stage = await Stage.findOne({
+        where: { stage_id: parsedStageId, project_id: parsedProjectId },
+      });
+      if (!stage) {
+        logger.warn(
+          `Stage not found or does not belong to project: stage_id=${parsedStageId}, project_id=${parsedProjectId}`
+        );
+        return res
+          .status(400)
+          .json({ error: 'Stage not found for the given project.' });
+      }
+
+      task.project_id = parsedProjectId;
+      task.stage_id = parsedStageId;
+    }
+
+    // Update fields
+    if (task_name !== undefined) task.task_name = task_name;
+    if (description !== undefined) task.description = description;
+    if (due_date !== undefined) task.due_date = due_date;
+    if (priority !== undefined) task.priority = priority;
+    if (is_completed !== undefined) task.is_completed = is_completed;
+
+    await task.save();
+
+    // Update assigned_users if provided
+    if (Array.isArray(assigned_users)) {
+      await setTaskAssignments(task.task_id, assigned_users);
+    }
+
+    // Update documents if provided
+    if (Array.isArray(documents)) {
+      await setTaskDocuments(task.task_id, documents);
+    }
+
+    // Refetch the updated task with assigned_users and documents
+    const updatedTask = await Task.findByPk(task.task_id, {
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_view', 'can_edit'] },
+        },
+        {
+          model: Document,
+          as: 'documents',
+          attributes: ['document_id', 'file_name', 'file_url', 'tags'],
+          through: { attributes: [] },
+        },
+      ],
+    });
+
+    logger.info(`Task updated successfully: ${parsedTaskId} by user_id: ${userId}`);
+    res.status(200).json({ message: 'Task updated successfully', task: updatedTask });
+  } catch (error) {
+    logger.error(`Error in updateTask: ${error.message}`, error);
+    res.status(500).json({ error: 'Error updating task' });
+  }
+}
+
+// Delete task
+async function deleteTask(req, res) {
+  try {
+    const { task_id } = req.params;
+    const userId = req.user.id;
+
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id provided: ${task_id}`);
+      return res
+        .status(400)
+        .json({ error: 'Invalid task_id. Must be an integer.' });
+    }
+
+    logger.info(`User ${userId} is attempting to delete task_id: ${parsedTaskId}`);
+
+    const task = await Task.findOne({
+      where: {
+        task_id: parsedTaskId,
+        [Op.or]: [
+          { owner_id: userId },
+          {
+            '$assigned_users.TaskAssignment.can_edit$': true,
+            '$assigned_users.user_id$': userId,
+          },
+        ],
+      },
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_edit'] },
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(
+        `Task not found or insufficient permissions for task_id: ${parsedTaskId}`
+      );
+      return res
+        .status(404)
+        .json({ error: 'Task not found or insufficient permissions' });
+    }
+
+    await task.destroy();
+    logger.info(`Task deleted successfully: ${parsedTaskId} by user_id: ${userId}`);
+    res.status(200).json({ message: 'Task deleted successfully' });
+  } catch (error) {
+    logger.error(`Error in deleteTask: ${error.message}`, error);
+    res.status(500).json({ error: 'Error deleting task' });
+  }
+}
+
+// Mark task as completed
+async function markTaskAsCompleted(req, res) {
+  try {
+    const { id: task_id } = req.params; // 'id' is the task_id
+    const userId = req.user.id;
+
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id: ${task_id}`);
+      return res.status(400).json({ error: 'Invalid task ID' });
+    }
+
+    logger.info(`User ${userId} is attempting to mark task ${parsedTaskId} as completed.`);
+
+    const task = await Task.findOne({
+      where: { task_id: parsedTaskId },
+      include: [
+        {
+          model: TaskAssignment,
+          as: 'taskAssignments',
+          where: { user_id: userId },
+          required: false,
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['project_id', 'project_name'],
+        },
+        {
+          model: Stage,
+          as: 'stage',
+          attributes: ['stage_id', 'stage_name'],
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(`Task not found: task_id=${parsedTaskId}`);
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check if user is owner or assigned to the task
+    const isOwner = task.owner_id === userId;
+    const isAssigned = task.taskAssignments && task.taskAssignments.length > 0;
+
+    if (!isOwner && !isAssigned) {
+      logger.warn(
+        `User ${userId} is not authorized to mark task ${parsedTaskId} as completed.`
+      );
+      return res.status(403).json({
+        error: 'You do not have permission to complete this task',
+      });
+    }
+
+    // Mark as completed
+    task.is_completed = true;
+    await task.save();
+
+    logger.info(`Task ${parsedTaskId} marked as completed by user ${userId}`);
+    res.status(200).json({ message: 'Task marked as completed', task });
+  } catch (error) {
+    logger.error(`Error in markTaskAsCompleted: ${error.message}`, error);
+    res.status(500).json({ error: 'Error marking task as completed' });
+  }
+}
+
+module.exports = {
+  createTask,
+  getTaskById,
+  getTasksByUser,
+  updateTask,
+  deleteTask,
+  markTaskAsCompleted,
+};
+
+--- Backend/controllers/authController.js ---
+
+// Backend/controllers/authController.js
+
+const bcrypt = require('bcrypt');
+const { User } = require('../models');
+const { validationResult } = require('express-validator'); // Correct import
+const jwt = require('jsonwebtoken');
+const logger = require('../logger'); // Ensure logger is correctly imported
+
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// Ensure JWT_SECRET is defined
+if (!JWT_SECRET) {
+    logger.error('JWT_SECRET is not defined in environment variables.');
+    throw new Error('JWT_SECRET environment variable is required.');
+}
+
+exports.loginUser = async (req, res) => {
+    try {
+        // Extract validation errors from the request
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            logger.warn(`Login validation failed: ${JSON.stringify(errors.array())}`);
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const { email, password } = req.body;
+
+        // Normalize email to lowercase to ensure case-insensitive matching
+        const normalizedEmail = email.toLowerCase();
+
+        // Find user by email
+        const user = await User.findOne({ where: { email: normalizedEmail } });
+        if (!user) {
+            logger.warn(`Login failed: User not found with email=${normalizedEmail}`);
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+
+        // Validate password using bcrypt
+        const isValid = await bcrypt.compare(password, user.password_hash);
+        if (!isValid) {
+            logger.warn(`Login failed: Invalid password for email=${normalizedEmail}`);
+            return res.status(400).json({ error: 'Invalid email or password.' });
+        }
+
+        // Generate JWT Token
+        const token = jwt.sign(
+            { id: user.user_id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        logger.info(`User logged in successfully: user_id=${user.user_id}`);
+        res.status(200).json({ token });
+    } catch (error) {
+        logger.error(`Error during login: ${error.message}`);
+        res.status(500).json({ error: 'Internal server error.' });
+    }
+};
+
+--- Backend/routes/projectRoutes.js ---
+
+// Backend/routes/projectRoutes.js
+const express = require('express');
+const router = express.Router();
+const {
+    createProject,
+    getProjectsByUserId,
+    getAllProjects,
+    getProjectById,
+    updateProject,
+    deleteProject,
+    addCollaborator,
+    getCollaborators,
+    updateCollaborator,
+    deleteCollaborator,
+    getStages,       // Imported for stage-specific operations
+    getStageById,    // Imported for fetching a specific stage
+    createStage,     // Imported for creating custom stages
+    updateStage,     // Imported for updating custom stages
+    deleteStage,     // Imported for deleting custom stages
+} = require('../controllers/projectController');
+const authMiddleware = require('../middleware/authMiddleware');
+
+// Apply authentication to all project routes
+router.use(authMiddleware);
+
+// Project CRUD operations
+router.post('/create', createProject);
+router.get('/user', getProjectsByUserId);
+router.get('/all', getAllProjects);
+
+// Collaborator operations
+router.post('/:id/collaborators', addCollaborator);
+router.get('/:id/collaborators', getCollaborators);
+router.put('/:id/collaborators/:collaborator_id', updateCollaborator);
+router.delete('/:id/collaborators/:collaborator_id', deleteCollaborator);
+
+// Stage operations
+router.get('/:project_id/stages/:stage_id', getStageById); // Fetch specific stage
+router.get('/:project_id/stages', getStages);               // Fetch all stages
+router.post('/:project_id/stages', createStage);            // Create a custom stage
+router.put('/:project_id/stages/:stage_id', updateStage);   // Update a custom stage
+router.delete('/:project_id/stages/:stage_id', deleteStage); // Delete a custom stage
+
+// Project detail routes (should come after more specific routes to prevent conflicts)
+router.get('/:id', getProjectById);
+router.put('/:id', updateProject);
+router.delete('/:id', deleteProject);
+
+module.exports = router;
+
+--- Backend/routes/authRoutes.js ---
+
+// Backend/routes/authRoutes.js
+
+const express = require('express');
+const router = express.Router();
+const { loginUser } = require('../controllers/authController');
+const { body } = require('express-validator');
+
+// Login Route
+router.post(
+  '/login',
+  [
+    body('email').isEmail().withMessage('Valid email is required.'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long.'),
+  ],
+  loginUser
+);
+
+module.exports = router;
+
+--- Backend/routes/documentRoutes.js ---
+
+// Backend/routes/documentRoutes.js
+const express = require('express');
+const router = express.Router();
+const { 
+  uploadDocument, 
+  getAllDocuments, 
+  updateDocument, 
+  deleteDocument 
+} = require('../controllers/documentController');
+const authMiddleware = require('../middleware/authMiddleware');
+
+// Import Multer and additional modules
+const multer = require('multer');
+const path = require('path');
+const crypto = require('crypto');
+
+// Multer: custom diskStorage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    // Save to the 'uploads/' folder (relative to your server root).
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    // Derive the extension from the original file name
+    const ext = path.extname(file.originalname).toLowerCase(); 
+    // Create a random 16-byte hex string
+    const base = crypto.randomBytes(16).toString('hex'); 
+    // Combine them. e.g. "abc123... .pdf"
+    const finalFilename = base + ext; 
+    cb(null, finalFilename);
+  },
+});
+
+// Initialize the Multer middleware with our custom storage
+const upload = multer({ storage });
+
+/**
+ * All these routes are behind authMiddleware
+ */
+router.use(authMiddleware);
+
+/**
+ * POST /api/documents
+ * => upload a new document with correct extension
+ */
+router.post('/', upload.single('file'), uploadDocument);
+
+/**
+ * GET /api/documents
+ * => list the user's documents
+ */
+router.get('/', getAllDocuments);
+
+/**
+ * PUT /api/documents/:document_id
+ * => update doc's metadata (tags, original_filename, etc)
+ */
+router.put('/:document_id', updateDocument);
+
+/**
+ * DELETE /api/documents/:document_id
+ * => permanently remove the doc
+ */
+router.delete('/:document_id', deleteDocument);
+
+module.exports = router;
+
+--- Backend/routes/userRoutes.js ---
+
+const express = require('express');
+const router = express.Router();
+const {
+    createUser,
+    getAllUsers,
+    getUserById,
+    updateUser,
+    deleteUser,
+    getUserDetails,
+} = require('../controllers/userController');
+const authMiddleware = require('../middleware/authMiddleware');
+
+console.log('Initializing User Routes');
+
+// Allow unauthenticated access to registration
+router.post('/create', createUser);
+
+// Apply middleware to protect all other routes
+router.use(authMiddleware);
+
+router.get('/getAll', getAllUsers);
+router.get('/me', getUserDetails); // New route for current user details
+router.get('/:id', getUserById);
+router.put('/:id', updateUser);
+router.delete('/:id', deleteUser);
+
+module.exports = router;
+
+--- Backend/routes/companyRoutes.js ---
+
+const authMiddleware = require('../middleware/authMiddleware');
+const express = require('express');
+const router = express.Router();
+const { Op } = require('sequelize');
+const {
+    createCompany,
+    getAllCompanies,
+    getCompanyById,
+    updateCompany,
+    deleteCompany,
+    getUsersByCompanyId,
+} = require('../controllers/companyController');
+const Company = require('../models').Company;
+
+console.log('Initializing Company Routes');
+
+// Protect all routes
+router.use(authMiddleware);
+
+// Ownership validation middleware specific to company routes
+const validateCompanyOwnership = async (req, res, next) => {
+    try {
+        const companyId = req.params.id; // Extract company ID from route parameters
+        const userId = req.user.id; // Extract authenticated user ID from `authMiddleware`
+
+        // Fetch the company and validate ownership
+        const company = await Company.findByPk(companyId);
+
+        if (!company) {
+            return res.status(404).json({ error: 'Company not found' });
+        }
+
+        if (company.owner_id !== userId) {
+            return res.status(403).json({ error: 'Access denied: You do not own this company' });
+        }
+
+        console.log(`Ownership validated for user ${userId} on company ${companyId}`);
+        next();
+    } catch (error) {
+        console.error('Error validating company ownership:', error);
+        res.status(500).json({ error: 'Internal server error during ownership validation' });
+    }
+};
+
+// Search route - specific paths must be defined before parameterized routes
+router.get('/search', async (req, res) => {
+    try {
+        const { name, email, created_after, created_before, updated_after, updated_before } = req.query;
+
+        const query = {};
+        if (name) query.company_name = { [Op.like]: `%${name}%` };
+        if (email) query.company_email = email;
+        if (created_after) query.created_at = { [Op.gte]: created_after };
+        if (created_before) query.created_at = { ...query.created_at, [Op.lte]: created_before };
+        if (updated_after) query.updated_at = { [Op.gte]: updated_after };
+        if (updated_before) query.updated_at = { ...query.updated_at, [Op.lte]: updated_before };
+
+        console.log('Executing company search with query:', query);
+
+        const companies = await Company.findAll({ where: query });
+
+        res.status(200).json(companies);
+    } catch (error) {
+        console.error('Error searching companies:', error);
+        res.status(500).json({ error: 'Failed to search companies' });
+    }
+});
+
+// Other routes
+router.post('/create', createCompany);
+router.get('/', getAllCompanies);
+router.get('/:id', getCompanyById); // Parameterized route should come last
+router.put('/:id', updateCompany);
+router.delete('/:id', deleteCompany);
+router.get('/:id/users', getUsersByCompanyId);
+router.get('/:id/owner', validateCompanyOwnership, async (req, res) => {
+    const company = await Company.findByPk(req.params.id, { include: 'owner' });
+    res.status(200).json(company.owner);
+});
+
+module.exports = router;
+
+--- Backend/routes/taskRoutes.js ---
+
+// Backend/routes/taskRoutes.js
+const express = require('express');
+const router = express.Router();
+const authMiddleware = require('../middleware/authMiddleware');
+const validateTask = require('../middleware/validateTask');
+const taskController = require('../controllers/taskController'); // Import taskController
+
+const { 
+    getTasksByUser, 
+    getTaskById, 
+    updateTask, 
+    deleteTask, 
+    createTask,
+    markTaskAsCompleted 
+} = taskController;
+
+// Protect all task routes
+router.use(authMiddleware);
+
+// Define CRUD routes for tasks with validation where necessary
+router.post('/', validateTask, createTask);     // Create a new task
+router.get('/user-tasks', getTasksByUser);      // Get all tasks associated with a user
+router.get('/:task_id', getTaskById);           // Get a specific task by ID
+router.put('/:task_id', validateTask, updateTask);  // Update a task by ID
+router.delete('/:task_id', deleteTask);         // Delete a task by ID
+
+// Add route to mark task as completed
+router.put('/:id/complete', markTaskAsCompleted);
+
+// Removed the incorrect 'assigned' route
+// router.get('/assigned', authMiddleware, taskController.getAssignedTasks);//Get all open tasks assigned to the authenticated user
+
+module.exports = router;
+
+--- Backend/config/database.js ---
+
+const { Sequelize } = require('sequelize');
+
+const sequelize = new Sequelize('project_db', 'thomasdeane', 'test', {
+  host: 'localhost',
+  dialect: 'postgres',
+  logging: false, // Set to true to see SQL queries in the console
+});
+
+async function testConnection() {
+  try {
+    await sequelize.authenticate();
+    console.log('Database connection established successfully.');
+  } catch (error) {
+    console.error('Unable to connect to the database:', error);
+  }
+}
+
+testConnection();
+
+module.exports = sequelize;
+
+--- Backend/config/config.json ---
+
+{
+  "development": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  },
+  "test": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db_test",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  },
+  "production": {
+    "username": "thomasdeane",
+    "password": "test",
+    "database": "project_db_prod",
+    "host": "localhost",
+    "dialect": "postgres",
+    "logging": false
+  }
+}
+
+--- Backend/config/routeConfig.js ---
+
+const routes = {
+    user: '/api/users',
+    project: '/api/projects',
+    task: '/api/tasks',
+    company: '/api/companies',
+};
+
+module.exports = routes;
+
+--- Backend/middleware/authMiddleware.js ---
+
+const jwt = require('jsonwebtoken');
+console.log(__dirname);
+// Use the secret key from the environment variables or fallback to a default (for development purposes only).
+const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
+
+/**
+ * Middleware to verify the JWT token and attach user info to the request object.
+ */
+module.exports = (req, res, next) => {
+    // Debug log to identify the routes where this middleware is applied
+    console.log(`AuthMiddleware applied to route: ${req.originalUrl}`);
+
+    try {
+        // Extract the token from the Authorization header. The format should be: "Bearer <token>"
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+            console.error('Authorization header is missing.');
+            return res.status(401).json({ error: 'Unauthorized: No token provided' });
+        }
+
+        const token = authHeader.split(' ')[1];
+        if (!token) {
+            console.error('Token is missing in the Authorization header.');
+            return res.status(401).json({ error: 'Unauthorized: Invalid Authorization header format' });
+        }
+
+        // Verify the token using the secret key.
+        const decoded = jwt.verify(token, JWT_SECRET);
+
+        // Attach decoded user information (e.g., user ID) to the `req` object for downstream middleware.
+        req.user = {
+            id: decoded.id,
+            email: decoded.email, // Optional, if present in the token payload
+            role: decoded.role,   // Optional, if roles are implemented in the payload
+        };
+
+        console.log(`Token verified successfully for user ID: ${decoded.id}, email: ${decoded.email}`);
+
+        // Call the next middleware or route handler.
+        next();
+    } catch (error) {
+        if (error.name === 'TokenExpiredError') {
+            console.error('Token has expired:', error);
+            return res.status(401).json({ error: 'Unauthorized: Token has expired' });
+        } else if (error.name === 'JsonWebTokenError') {
+            console.error('Invalid token:', error);
+            return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+        }
+
+        // Handle other unexpected errors.
+        console.error('Error verifying token:', error);
+        return res.status(500).json({ error: 'Internal server error during token verification' });
+    }
+};
+
+--- Backend/middleware/validateTask.js ---
+
+// Backend/middleware/validateTask.js
+const { body, validationResult } = require('express-validator');
+
+const validateTask = [
+    body('project_id')
+        .exists().withMessage('project_id is required')
+        .isInt({ gt: 0 }).withMessage('project_id must be a positive integer'),
+    body('stage_id')
+        .exists().withMessage('stage_id is required')
+        .isInt({ gt: 0 }).withMessage('stage_id must be a positive integer'),
+    body('task_name')
+        .exists().withMessage('task_name is required')
+        .isString().withMessage('task_name must be a string')
+        .notEmpty().withMessage('task_name cannot be empty'),
+    body('description')
+        .optional()
+        .isString().withMessage('description must be a string'),
+    body('due_date')
+        .optional({ checkFalsy: true }) // Allows empty strings to be treated as missing
+        .isISO8601().withMessage('due_date must be a valid date'),
+    body('priority')
+        .exists().withMessage('priority is required')
+        .isIn(['Low', 'Medium', 'High']).withMessage('priority must be Low, Medium, or High'),
+
+    (req, res, next) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            const extractedErrors = errors.array().map(err => ({ [err.param]: err.msg }));
+            return res.status(400).json({
+                errors: extractedErrors,
+            });
+        }
+        next();
+    }
+];
+
+module.exports = validateTask;
+
+--- Backend/middleware/errorHandler.js ---
+
+// Backend/middleware/errorHandler.js
+
+const logger = require('../logger');
+
+/**
+ * Centralized Error Handling Middleware
+ */
+const errorHandler = (err, req, res, next) => {
+    // Determine the status code
+    const statusCode = err.statusCode || 500;
+
+    // Log detailed error information
+    logger.error({
+        message: err.message,
+        stack: err.stack,
+        method: req.method,
+        url: req.originalUrl,
+        body: req.body,
+        params: req.params,
+        query: req.query,
+        headers: req.headers,
+    });
+
+    // Customize response based on error type
+    let errorMessage = 'Internal server error.';
+    if (err.name === 'ValidationError') {
+        errorMessage = err.message;
+    } else if (err.name === 'UnauthorizedError') {
+        errorMessage = 'Invalid token.';
+    }
+    // Add more custom error types as needed
+
+    // Send structured error response
+    res.status(statusCode).json({
+        error: errorMessage,
+    });
+};
+
+module.exports = errorHandler;
+
+--- Backend/middleware/requestLogger.js ---
+
+// Backend/middleware/requestLogger.js
+
+const logger = require('../logger');
+
+/**
+ * Middleware to log incoming HTTP requests.
+ * Logs method, URL, headers, and body.
+ */
+const requestLogger = (req, res, next) => {
+    const { method, url, headers, body } = req;
+
+    // Define fields to mask in logs
+    const maskedBody = { ...body };
+    if (maskedBody.password) {
+        maskedBody.password = '***';
+    }
+
+    // Log the request details
+    logger.info({
+        message: 'Incoming Request',
+        method,
+        url,
+        headers,
+        body: maskedBody, // Use masked body to protect sensitive data
+    });
+
+    next();
+};
+
+module.exports = requestLogger;
+
+--- Backend/models/projectCollaborators.js ---
+
+// models/projectCollaborators.js
+// Backend/models/projectCollaborators.js
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class ProjectCollaborator extends Model {
+    static associate(models) {
+      console.log('Associating ProjectCollaborator with Project and User');
+      this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
+      this.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+      console.log('Associations for ProjectCollaborator:', this.associations);
+    }
+  }
+
+  ProjectCollaborator.init(
+    {
+      collaborator_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      project_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      user_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      role: { 
+        type: DataTypes.INTEGER, // Store role as an integer
+        allowNull: false,
+        defaultValue: 0 // Default to Buyer (0)
+      },
+      assigned_at: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'ProjectCollaborator',
+      tableName: 'projectcollaborators',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return ProjectCollaborator;
+};
+
+--- Backend/models/taskAssignment.js ---
+
+// models/taskassignment.js
+// Backend/models/taskAssignment.js
+
+module.exports = (sequelize, DataTypes) => {
+    const TaskAssignment = sequelize.define('TaskAssignment', {
+        assignment_id: {
+            type: DataTypes.INTEGER,
+            primaryKey: true,
+            autoIncrement: true,
+        },
+        task_id: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+        user_id: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+        can_edit: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false,
+        },
+        can_view: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: true,
+        },
+    }, {
+        tableName: 'taskassignments',
+        timestamps: false,
+        modelName: 'TaskAssignment',
+    });
+
+    // Define associations
+    TaskAssignment.associate = (models) => {
+        TaskAssignment.belongsTo(models.Task, { foreignKey: 'task_id', as: 'task' });
+        TaskAssignment.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
+    };
+
+    console.log("TaskAssignment model initialized.");
+    return TaskAssignment;
+};
+
+--- Backend/models/user.js ---
+
+// Backend/models/user.js
+
+const { Model, DataTypes } = require('sequelize');
+const bcrypt = require('bcrypt');
+
+module.exports = (sequelize) => {
+  class User extends Model {
+    static associate(models) {
+      this.belongsTo(models.Company, { foreignKey: 'company_id', as: 'company' });
+      this.hasMany(models.Project, { foreignKey: 'owner_id', as: 'ownedProjects' });
+      this.hasMany(models.ProjectCollaborator, { foreignKey: 'user_id', as: 'projectCollaborations' });
+      this.belongsToMany(models.Task, { through: models.TaskAssignment, foreignKey: 'user_id', as: 'tasks' });
+    }
+
+    // Instance method to validate password
+    async validatePassword(password) {
+      return await bcrypt.compare(password, this.password_hash);
+    }
+  }
+
+  User.init(
+    {
+      user_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      company_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+          model: 'companies',
+          key: 'company_id',
+        },
+        onDelete: 'SET NULL',
+        onUpdate: 'CASCADE',
+      },
+      username: {
+        type: DataTypes.STRING(255),
+        allowNull: false,
+        unique: true,
+      },
+      email: {
+        type: DataTypes.STRING(255),
+        allowNull: false,
+        unique: true,
+        validate: { isEmail: true },
+      },
+      password_hash: {
+        type: DataTypes.STRING(255),
+        allowNull: false,
+      },
+      first_name: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+      },
+      last_name: {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+      },
+      is_active: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+      },
+      created_at: {
+        type: DataTypes.DATE,
+        allowNull: false,
+        defaultValue: DataTypes.NOW,
+      },
+      updated_at: {
+        type: DataTypes.DATE,
+        allowNull: false,
+        defaultValue: DataTypes.NOW,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'User',
+      tableName: 'users',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+      hooks: {
+        beforeCreate: async (user) => {
+          if (user.password_hash && !user.password_hash.startsWith('$2b$')) {
+            const salt = await bcrypt.genSalt(10);
+            user.password_hash = await bcrypt.hash(user.password_hash, salt);
+          }
+        },
+        beforeUpdate: async (user) => {
+          if (user.changed('password_hash') && !user.password_hash.startsWith('$2b$')) {
+            const salt = await bcrypt.genSalt(10);
+            user.password_hash = await bcrypt.hash(user.password_hash, salt);
+          }
+        },
+      }
+    }
+  );
+
+  return User;
+};
+
+--- Backend/models/task.js ---
+
+// models/task.js
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Task extends Model {
+    static associate(models) {
+      this.belongsTo(models.Stage, {
+        foreignKey: 'stage_id',
+        as: 'stage',
+        hooks: true,
+      });
+      this.belongsTo(models.Project, {
+        foreignKey: 'project_id',
+        as: 'project',
+        hooks: true,
+      });
+      this.belongsTo(models.User, {
+        foreignKey: 'owner_id',
+        as: 'owner',
+        onDelete: 'SET NULL',
+      });
+      this.belongsToMany(models.User, {
+        through: models.TaskAssignment,
+        as: 'assigned_users',
+        foreignKey: 'task_id',
+      });
+
+      // **New Association**
+      this.hasMany(models.TaskAssignment, {
+        foreignKey: 'task_id',
+        as: 'taskAssignments', // This alias should match the one used in controller
+        onDelete: 'CASCADE', // Optional: Define behavior on task deletion
+        hooks: true,
+      });
+      this.belongsToMany(models.Document, {
+        through: models.TaskDocument,
+        foreignKey: 'task_id',
+        otherKey: 'document_id',
+        as: 'documents',
+      });
+    }
+  }
+
+  Task.init(
+    {
+      task_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      stage_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      project_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      task_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      is_completed: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true, 
+      },
+      description: DataTypes.STRING,
+      due_date: DataTypes.DATE,
+      priority: DataTypes.STRING,
+    },
+    {
+      sequelize,
+      modelName: 'Task',
+      tableName: 'tasks',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Task;
+};
+
+--- Backend/models/index.js ---
+
+// Backend/models/index.js
+
+const fs = require('fs');
+const path = require('path');
+const Sequelize = require('sequelize');
+const basename = path.basename(__filename);
+const env = process.env.NODE_ENV || 'development';
+const config = require('../config/config.json')[env];
+const db = {};
+
+let sequelize;
+if (config.use_env_variable) {
+  sequelize = new Sequelize(process.env[config.use_env_variable], config);
+} else {
+  sequelize = new Sequelize(config.database, config.username, config.password, config);
+}
+
+// Load models dynamically
+fs
+  .readdirSync(__dirname)
+  .filter(file => {
+    return (
+      file.indexOf('.') !== 0 &&
+      file !== basename &&
+      file.slice(-3) === '.js'
+    );
+  })
+  .forEach(file => {
+    try {
+      const model = require(path.join(__dirname, file))(sequelize, Sequelize.DataTypes);
+      db[model.name] = model;
+      console.log(`Model loaded: ${model.name}`);
+    } catch (error) {
+      console.error(`Failed to load model from file: ${file}`, error);
+    }
+  });
+
+// Initialize associations
+Object.keys(db).forEach(modelName => {
+  if (db[modelName].associate) {
+    try {
+      db[modelName].associate(db);
+      console.log(`Associations initialized for model: ${modelName}`);
+    } catch (error) {
+      console.error(`Failed to initialize associations for model: ${modelName}`, error);
+    }
+  }
+});
+
+// Test model availability
+const requiredModels = ['Project', 'User', 'Company', 'Task', 'TaskAssignment'];
+requiredModels.forEach((modelName) => {
+    if (!db[modelName]) {
+        console.error(`Required model not found: ${modelName}. Please verify the model file.`);
+    } else {
+        console.log(`Model verified: ${modelName}`);
+    }
+});
+
+db.sequelize = sequelize;
+db.Sequelize = Sequelize;
+
+module.exports = db;
+
+--- Backend/models/company.js ---
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Company extends Model {
+    static associate(models) {
+      this.hasMany(models.User, { foreignKey: 'company_id', as: 'users' });
+    }
+  }
+
+  Company.init(
+    {
+      company_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      company_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+      },
+      company_email: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+          model: 'users', // Ensure the table name matches your `User` model
+          key: 'user_id',
+        },
+        onDelete: 'CASCADE',
+        onUpdate: 'CASCADE',
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Company',
+      tableName: 'companies',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Company;
+};
+
+--- Backend/models/stage.js ---
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Stage extends Model {
+    static associate(models) {
+      this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
+      this.hasMany(models.Task, { foreignKey: 'stage_id', as: 'tasks' });
+    }
+  }
+
+  Stage.init(
+    {
+      stage_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      stage_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      stage_order: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      is_custom: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+      },
+      project_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Stage',
+      tableName: 'stages',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Stage;
+};
+
+--- Backend/models/taskDocument.js ---
+
+// Backend/models/taskDocument.js
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class TaskDocument extends Model {
+    static associate(models) {
+      // This is the join table between Task and Document
+    }
+  }
+
+  TaskDocument.init(
+    {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      task_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      document_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'TaskDocument',
+      tableName: 'taskdocuments',
+      timestamps: false,
+    }
+  );
+
+  return TaskDocument;
+};
+
+--- Backend/models/project.js ---
+
+// Backend/models/project.js
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Project extends Model {
+    static associate(models) {
+      this.hasMany(models.ProjectCollaborator, {
+        foreignKey: 'project_id',
+        as: 'collaborators',
+        onDelete: 'CASCADE',
+        hooks: true,
+      });
+      this.hasMany(models.Stage, {
+        foreignKey: 'project_id',
+        as: 'stages',
+        onDelete: 'CASCADE',
+        hooks: true,
+      });
+      this.hasMany(models.Task, {
+        foreignKey: 'project_id',
+        as: 'tasks',
+        onDelete: 'CASCADE',
+        hooks: true,
+      });
+      this.belongsTo(models.User, {
+        foreignKey: 'owner_id',
+        as: 'owner',
+      });
+    }
+  }
+
+  Project.init(
+    {
+      project_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      project_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        references: {
+          model: 'users',
+          key: 'user_id',
+        },
+      },
+      description: DataTypes.TEXT,
+      status: {
+        type: DataTypes.ENUM('active', 'completed', 'archived'),
+        defaultValue: 'active',
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Project',
+      tableName: 'projects',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Project;
+};
+
+--- Backend/models/document.js ---
+
+// Backend/models/document.js
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Document extends Model {
+    static associate(models) {
+      this.belongsToMany(models.Task, {
+        through: models.TaskDocument,
+        foreignKey: 'document_id',
+        otherKey: 'task_id',
+        as: 'tasks',
+      });
+      this.belongsTo(models.User, { foreignKey: 'owner_id', as: 'owner' });
+    }
+  }
+
+  Document.init(
+    {
+      document_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      file_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      file_url: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      tags: {
+        type: DataTypes.ARRAY(DataTypes.STRING),
+        defaultValue: [],
+      },
+      original_filename: {
+        type: DataTypes.STRING, // e.g. user’s original "myhouse.pdf"
+        allowNull: true,
+      },
+      uploaded_by: {
+        type: DataTypes.STRING, // or integer if you want user_id
+        allowNull: true,
+      },
+      uploaded_date: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Document',
+      tableName: 'documents',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Document;
+};
+
+--- Backend/server.js ---
+
+// Backend/server.js
+
+require('dotenv').config();
+const express = require('express');
+require('express-async-errors');
+const cors = require('cors'); // Import CORS
+const app = express();
+const userRoutes = require('./routes/userRoutes');
+const projectRoutes = require('./routes/projectRoutes');
+const taskRoutes = require('./routes/taskRoutes');
+const companyRoutes = require('./routes/companyRoutes');
+const authRoutes = require('./routes/authRoutes'); // Add auth routes
+const authMiddleware = require('./middleware/authMiddleware'); // Correct path and usage
+const db = require('./models'); // Models for associations
+const routes = require('./config/routeConfig');
+const logger = require('./logger'); // Import Winston logger
+const errorHandler = require('./middleware/errorHandler'); // Import centralized error handler
+const requestLogger = require('./middleware/requestLogger'); // Import the requestLogger middleware
+const documentRoutes = require('./routes/documentRoutes');
+const path = require('path'); // For serving static files
+
+// Middleware for JSON parsing
+app.use(express.json());
+
+// Apply the requestLogger middleware
+app.use(requestLogger);
+
+// CORS configuration
+app.use(cors({
+    origin: 'http://localhost:3000', // Allow requests from your React app
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+}));
+app.options('*', cors());
+
+// Log loaded routes using Winston
+logger.info(`Loaded Routes: ${JSON.stringify(routes)}`);
+
+// Ensure we serve /uploads from this backend on port 5001
+// So requests to http://localhost:5001/uploads/<filename> retrieve the file
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Route definitions
+app.use(routes.user, userRoutes);
+app.use(routes.project, authMiddleware, projectRoutes);
+app.use(routes.task, authMiddleware, taskRoutes);
+app.use(routes.company, authMiddleware, companyRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/documents', documentRoutes);
+
+// Example protected route
+app.get('/api/protected', authMiddleware, (req, res) => {
+    logger.info(`Accessing protected route for user: ${JSON.stringify(req.user)}`);
+    res.status(200).json({ message: 'You have accessed a protected route', user: req.user });
+});
+
+// Database synchronization
+db.sequelize.sync({ alter: true })
+    .then(() => logger.info('Database synced successfully'))
+    .catch(err => logger.error('Database sync error:', err));
+
+// Use the centralized error handling middleware (should be after all routes)
+app.use(errorHandler);
+
+// Start the server
+const PORT = process.env.PORT || 5001;
+app.listen(PORT, () => logger.info(`Server running on port ${PORT}`));
+
+/*
+Notes:
+1. CORS is set to allow requests from localhost:3000.
+2. /uploads is now served at http://localhost:5001/uploads/<filename>.
+3. Make sure your Document records have file_url = "http://localhost:5001/uploads/..."
+*/

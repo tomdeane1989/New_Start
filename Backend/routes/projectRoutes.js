@@ -1,32 +1,49 @@
-// routes/projectRoutes.js
-
+// Backend/routes/projectRoutes.js
 const express = require('express');
 const router = express.Router();
-const projectController = require('../controllers/projectController');
-const { isAuthenticated } = require('../middleware/authMiddleware');
+const {
+    createProject,
+    getProjectsByUserId,
+    getAllProjects,
+    getProjectById,
+    updateProject,
+    deleteProject,
+    addCollaborator,
+    getCollaborators,
+    updateCollaborator,
+    deleteCollaborator,
+    getStages,       // Imported for stage-specific operations
+    getStageById,    // Imported for fetching a specific stage
+    createStage,     // Imported for creating custom stages
+    updateStage,     // Imported for updating custom stages
+    deleteStage,     // Imported for deleting custom stages
+} = require('../controllers/projectController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-// Test ProjectCollaborators Association Route (Make sure this route is defined first to avoid conflicts)
-router.get('/test-collaborators', isAuthenticated, projectController.testProjectCollaboratorsAssociation);
+// Apply authentication to all project routes
+router.use(authMiddleware);
 
-// Project routes
-router.post('/', isAuthenticated, projectController.createProject); // Create new project
-router.get('/', isAuthenticated, projectController.getProjectsByUserId); // Get all projects for authenticated user
-router.get('/:id', isAuthenticated, projectController.getProjectById); // Get specific project by ID
-router.put('/:id', isAuthenticated, projectController.isProjectOwner, projectController.updateProject); // Update project by ID
-router.delete('/:id', isAuthenticated, projectController.isProjectOwner, projectController.deleteProject); // Delete project by ID
+// Project CRUD operations
+router.post('/create', createProject);
+router.get('/user', getProjectsByUserId);
+router.get('/all', getAllProjects);
 
-// Collaborator routes
-router.post('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.addCollaborator); // Add collaborator to project
-router.get('/:project_id/collaborators', isAuthenticated, projectController.isProjectOwner, projectController.getCollaborators); // Get all collaborators for a project
-router.put('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.updateCollaborator); // Update a collaborator's role
-router.delete('/:project_id/collaborators/:collaborator_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteCollaborator); // Delete collaborator from project
+// Collaborator operations
+router.post('/:id/collaborators', addCollaborator);
+router.get('/:id/collaborators', getCollaborators);
+router.put('/:id/collaborators/:collaborator_id', updateCollaborator);
+router.delete('/:id/collaborators/:collaborator_id', deleteCollaborator);
 
-// Stage routes
-router.get('/:project_id/stages', isAuthenticated, projectController.isProjectOwner, projectController.getStages); // Get all stages for a project
-router.get('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.getStageById); // Get specific stage by ID
-router.post('/:project_id/stages', isAuthenticated, projectController.isProjectOwner, projectController.createStage); // Create custom stage
-router.put('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.updateStage); // Update existing custom stage
-router.delete('/:project_id/stages/:stage_id', isAuthenticated, projectController.isProjectOwner, projectController.deleteStage); // Delete custom stage
+// Stage operations
+router.get('/:project_id/stages/:stage_id', getStageById); // Fetch specific stage
+router.get('/:project_id/stages', getStages);               // Fetch all stages
+router.post('/:project_id/stages', createStage);            // Create a custom stage
+router.put('/:project_id/stages/:stage_id', updateStage);   // Update a custom stage
+router.delete('/:project_id/stages/:stage_id', deleteStage); // Delete a custom stage
 
+// Project detail routes (should come after more specific routes to prevent conflicts)
+router.get('/:id', getProjectById);
+router.put('/:id', updateProject);
+router.delete('/:id', deleteProject);
 
 module.exports = router;

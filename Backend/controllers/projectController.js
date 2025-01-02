@@ -1,7 +1,7 @@
-// controllers/projectController.js
-
-const db = require('../models'); // Import all models via db
-const { Project, Stage, User, ProjectCollaborators } = db; // Destructure specific models as needed
+// Backend/controllers/projectController.js
+const db = require('../models');
+const { Project, Stage, User, ProjectCollaborator, Task, TaskAssignment } = db;
+const logger = require('../logger'); // Import Winston logger
 
 // Define default stages
 const defaultStages = [
@@ -15,273 +15,504 @@ const defaultStages = [
     { stage_name: 'Misc', description: 'For any tasks outside of the standard stages', stage_order: 8, is_custom: true }
 ];
 
-// Middleware function to verify project ownership
-function isProjectOwner(req, res, next) {
-    console.log("Inside isProjectOwner middleware");
-    console.log("req.params:", req.params);
+const defaultTasks = {
+    'Viewings': [
+        'Set criteria for your housing search',
+        'Determine your financial position - salary/savings/existing equity',
+        'Find appropriate properties through Rightmove etc.',
+        'Contact Estate Agents for further information',
+        'Book viewings',
+        'Invite your Mortgage Advisor (if you have one) to collaborate on A.I.P',
+    ],
+    'Offer Stage': [
+        'Agreement in Principal with mortgage provider',
+        'Offer',
+        'Seller\'s response to offer',
+        'Counter offer 1',
+        'Seller\'s response to counter offer 1',
+        'Counter offer 2',
+        'Seller\'s response to counter offer 2',
+    ],
+    'Offer Accepted': [
+        'Invite solicitor to collaborate on Conveyancing',
+        'Provide solicitor contact information to seller\'s estate agent for Memorandum of Sale',
+    ],
+    'Legal, Surveys, & Compliance': [
+        'Review and agree on costs with solicitor',
+        'Decide on your need for extensive or basic surveys',
+        'Confirm identity',
+        'Gifted deposit administration',
+    ],
+    'Mortgage Application': [
+        'Provide bank statements',
+        'Provide payslips',
+        'Provide proof of address',
+        'Provide proof of identity',
+        'Review affordability of mortgage payments',
+        'Confirm mortgage offer',
+    ],
+    'Contract Exchange': [
+        'Sign Mortgage offer',
+        'Sign Deed of Covenant',
+        'Agree on Chattels',
+        'Agree completion date',
+    ],
+    'Misc': [],
+};
 
-    const project_id = req.params.project_id || req.params.id;
-    const userId = req.user?.id;
-    
-    console.log("project_id:", project_id);
-    console.log("userId:", userId);
+// Middleware to verify project ownership
+async function isProjectOwner(req, res, next) {
+    try {
+        const project_id = parseInt(req.params.project_id || req.params.id, 10);
+        const userId = req.user?.id;
 
-    Project.findOne({ where: { project_id, owner_id: userId } })
-        .then(project => {
-            if (!project) {
-                console.log("User is not project owner");
-                return res.status(403).json({ error: "You do not have permission to access this project" });
-            }
-            next();
-        })
-        .catch(error => {
-            console.error("Error checking project ownership:", error);
-            res.status(500).json({ error: 'Error verifying project ownership' });
+        logger.info(`Verifying ownership for project: ${project_id} by user: ${userId}`);
+
+        const project = await Project.findOne({
+            where: { project_id, owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['user_id', 'role']
+                }
+            ]
         });
+
+        if (!project) {
+            logger.warn(`User ${userId} does not have permission to access project ${project_id}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        logger.info(`User ${userId} verified as owner of project ${project_id}`);
+        next();
+    } catch (error) {
+        logger.error(`Error verifying project ownership: ${error.message}`, error);
+        res.status(500).json({ error: 'Error verifying project ownership' });
+    }
 }
 
-// Create a new project and add default stages
-//console.log("Authenticated User ID:", req.user?.id);
-
+// Create Projects
 async function createProject(req, res) {
     try {
-        const { project_name, description, start_date, end_date, status } = req.body;
-        const owner_id = req.user?.id;  // Ensure owner_id is set from the authenticated user
+        const { project_name, description, start_date, end_date, status, user_role } = req.body;
+        const owner_id = req.user?.id;
 
         if (!owner_id) {
+            logger.warn("Owner ID is missing or invalid.");
             return res.status(400).json({ error: "Owner ID is missing or invalid." });
         }
 
-        // Step 1: Create the project with the owner_id
+        if (user_role === undefined || (user_role !== 0 && user_role !== 1)) {
+            logger.warn(`Invalid user_role: ${user_role}`);
+            return res.status(400).json({ error: "Invalid user_role. Must be 0 (Buyer) or 1 (Seller)." });
+        }
+
         const project = await Project.create({
             project_name,
             description,
             start_date,
             end_date,
-            status,
-            owner_id  // Include owner_id here
+            status: status || 'active',
+            owner_id,
         });
 
-        // Step 2: Add default stages to the project
+        logger.info(`Project created successfully: ${project.project_id} by user_id: ${owner_id}`);
+
+        await ProjectCollaborator.create({
+            project_id: project.project_id,
+            user_id: owner_id,
+            role: user_role,
+        });
+
+        logger.info(`Owner assigned as collaborator with role: ${user_role}`);
+
         const stagesToAdd = defaultStages.map(stage => ({
             ...stage,
             project_id: project.project_id,
             created_at: new Date(),
-            updated_at: new Date()
+            updated_at: new Date(),
         }));
 
-        await Stage.bulkCreate(stagesToAdd); // Insert all stages in one go
+        const stages = await Stage.bulkCreate(stagesToAdd, { returning: true });
+        logger.info(`Default stages created for project_id: ${project.project_id}`);
 
-        res.status(201).json({ message: 'Project and default stages created successfully', project });
+
+        const thirtyDaysLater = new Date();
+        thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+
+        const tasks = stages.flatMap(stage => {
+            const stageTasks = defaultTasks[stage.stage_name];
+            if (!stageTasks) {
+                logger.warn(`No tasks defined for stage: ${stage.stage_name}`);
+                return [];
+            }
+
+            return stageTasks.map(taskName => ({
+                task_name: taskName,
+                stage_id: stage.stage_id,
+                project_id: project.project_id,
+                owner_id: owner_id,
+                created_at: new Date(),
+                updated_at: new Date(),
+                due_date: thirtyDaysLater,    // Set default due date 30 days later
+                priority: 'Medium',           // Set default priority to Medium
+            }));
+        });
+
+        if (tasks.length > 0) {
+            await Task.bulkCreate(tasks);
+            logger.info(`Default tasks created for project_id: ${project.project_id}`);
+        }
+
+        res.status(201).json({
+            message: 'Project, default stages, and tasks created successfully',
+            project,
+        });
     } catch (error) {
-        console.error("Error in createProject:", error);
+        logger.error(`Error in createProject: ${error.message}`, error);
         res.status(500).json({ error: 'Error creating project' });
+    }
+}
+
+// Get projects by authenticated user
+// Backend/controllers/projectController.js
+
+async function getProjectsByUserId(req, res) {
+    logger.info(`Fetching projects for user: ${req.user.id}`);
+
+    try {
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            logger.error(`Invalid user ID: ${req.user.id}`);
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+
+        // Fetch projects owned by the user with detailed collaborator info
+        const ownedProjects = await Project.findAll({
+            where: { owner_id: userId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                        },
+                    ],
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+                    include: [
+                        {
+                            model: Task,
+                            as: 'tasks',
+                            attributes: [
+                                'task_id',
+                                'created_at',
+                                'updated_at',
+                                'task_name',
+                                'description',
+                                'due_date',
+                                'priority',
+                                'is_completed',
+                                'owner_id',
+                            ],
+                        },
+                    ],
+                },
+            ],
+        });
+
+        logger.info(`Owned projects retrieved: ${ownedProjects.length}`);
+
+        // Fetch projects where the user is a collaborator with detailed user info
+        const collaboratorProjects = await Project.findAll({
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    where: { user_id: userId },
+                    required: true,
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                        },
+                    ],
+                },
+            ],
+            // Exclude projects already fetched as owned projects to prevent duplication
+            where: {
+                owner_id: { [db.Sequelize.Op.ne]: userId }, // Assuming 'db' is imported and Sequelize is accessible
+            },
+            includeIgnoreAttributes: false, // Ensure all includes are processed
+        });
+
+        logger.info(`Collaborator projects retrieved: ${collaboratorProjects.length}`);
+
+        // Combine owned and collaborator projects
+        const allProjects = [...ownedProjects, ...collaboratorProjects];
+
+        // Remove duplicate projects based on project_id
+        const uniqueProjectsMap = new Map();
+        allProjects.forEach((project) => {
+            uniqueProjectsMap.set(project.project_id, project);
+        });
+        const uniqueProjects = Array.from(uniqueProjectsMap.values());
+
+        logger.info(`Unique projects retrieved: ${uniqueProjects.length}`);
+
+        res.status(200).json(uniqueProjects);
+    } catch (error) {
+        logger.error(`Error in getProjectsByUserId: ${error.message}`, error);
+        res.status(500).json({ error: 'Failed to fetch user projects', details: error.message });
     }
 }
 
 // Get all projects
 async function getAllProjects(req, res) {
     try {
-        const projects = await Project.findAll();
-        res.json(projects);
-    } catch (error) {
-        console.error("Error in getAllProjects:", error);
-        res.status(500).json({ error: 'Error retrieving projects' });
-    }
-}
-
-// Get projects by authenticated user
-async function getProjectsByUserId(req, res) {
-    console.log("Checking Project model:", Project);  // Confirm Project model is loaded
-    try {
-        // Parse and validate userId
-        const userId = parseInt(req.user.id, 10);
-        if (isNaN(userId)) {
-            console.error("Invalid user ID:", req.user.id);
-            return res.status(400).json({ error: 'Invalid user ID' });
-        }
-        console.log("Validated user ID:", userId);
-
-        // Fetch projects where the user is the owner, including collaborators
-        const ownedProjects = await Project.findAll({
-            where: { owner_id: userId },
+        logger.info('Fetching all projects...');
+        const projects = await Project.findAll({
             include: [
                 {
-                    model: ProjectCollaborators,
-                    as: 'collaborators',
-                    required: false,
-                    attributes: ['user_id', 'role']
-                }
-            ]
-        });
-        console.log("Owned Projects:", ownedProjects);
-
-        // Fetch projects where the user is a collaborator, with the alias specified
-        const collaboratorProjects = await Project.findAll({
-            include: [
-                {
-                    model: ProjectCollaborators,
-                    as: 'collaborators',
-                    where: { user_id: userId },
-                    attributes: ['project_id'],
-                    required: true  // Ensures only collaborator-linked projects are retrieved
-                }
-            ]
-        });
-        console.log("Collaborator Projects:", collaboratorProjects);
-
-        // Merge owned and collaborated projects, removing duplicates by project_id
-        const allProjects = [...ownedProjects, ...collaboratorProjects];
-        const uniqueProjects = allProjects.filter((project, index, self) =>
-            index === self.findIndex((p) => p.project_id === project.project_id)
-        );
-
-        res.status(200).json(uniqueProjects);
-    } catch (error) {
-        console.error('Error in getProjectsByUserId:', error);
-        res.status(500).json({ error: 'Error retrieving user projects' });
-    }
-}
-
-async function getProjectById(req, res) {
-    try {
-        // Parse and validate projectId
-        const projectId = parseInt(req.params.id, 10);
-        if (isNaN(projectId)) {
-            console.error("Invalid project ID:", req.params.id);
-            return res.status(400).json({ error: 'Invalid project ID' });
-        }
-        console.log("Validated project ID:", projectId);
-
-        // Parse and validate userId
-        const userId = parseInt(req.user.id, 10);
-        if (isNaN(userId)) {
-            console.error("Invalid user ID:", req.user.id);
-            return res.status(400).json({ error: 'Invalid user ID' });
-        }
-        console.log("Validated user ID:", userId);
-
-        const project = await Project.findOne({
-            where: {
-                project_id: projectId,
-                owner_id: userId,
-            },
-            include: [
-                {
-                    model: ProjectCollaborators,
+                    model: ProjectCollaborator,
                     as: 'collaborators',
                     attributes: ['user_id', 'role'],
+                    required: false,
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+                    required: false,
+                },
+            ],
+        });
+        logger.info(`Found ${projects.length} projects.`);
+        res.status(200).json(projects);
+    } catch (error) {
+        logger.error(`Error in getAllProjects: ${error.message}`, error);
+        res.status(500).json({ error: 'Error retrieving all projects', details: error.message });
+    }
+}
+
+// Get project by ID
+async function getProjectById(req, res) {
+    try {
+        const projectId = parseInt(req.params.id, 10);
+        if (isNaN(projectId)) {
+            logger.warn(`Invalid project ID: ${req.params.id}`);
+            return res.status(400).json({ error: "Invalid project ID" });
+        }
+
+        const userId = parseInt(req.user.id, 10);
+        if (isNaN(userId)) {
+            logger.warn(`Invalid user ID: ${req.user.id}`);
+            return res.status(400).json({ error: "Invalid user ID" });
+        }
+
+        // Fetch the project and include collaborators to check access
+        const project = await Project.findOne({
+            where: { project_id: projectId },
+            include: [
+                {
+                    model: ProjectCollaborator,
+                    as: 'collaborators',
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                    }],
+                },
+                {
+                    model: Stage,
+                    as: 'stages',
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+                    include: [
+                        {
+                            model: Task,
+                            as: 'tasks',
+                            attributes: ['task_id', 'task_name', 'description', 'due_date', 'priority', 'is_completed', 'owner_id'],
+                            include: [
+                                {
+                                    model: User,
+                                    as: 'assigned_users',
+                                    attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                                    through: {
+                                        attributes: ['can_view', 'can_edit'],
+                                    },
+                                },
+                            ],
+                        },
+                    ],
                 },
             ],
         });
 
         if (!project) {
-            console.log("Project not found or unauthorized access for project ID:", projectId);
-            return res.status(404).json({ error: 'Project not found or unauthorized' });
+            logger.warn(`Project not found for ID: ${projectId}`);
+            return res.status(404).json({ error: "Project not found" });
         }
 
+        // Check if the requesting user is the owner or a collaborator
+        const isOwner = project.owner_id === userId;
+        const isCollaborator = project.collaborators.some(collab => collab.user_id === userId);
+
+        if (!isOwner && !isCollaborator) {
+            logger.warn(`User ${userId} is not authorized to access project ${projectId}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        // Optionally, you can remove sensitive information or structure the response as needed
+        logger.info(`Project retrieved successfully: ${projectId} by user ${userId}`);
         res.status(200).json(project);
     } catch (error) {
-        console.error('Error in getProjectById:', error);
-        res.status(500).json({ error: 'Error retrieving project' });
+        logger.error(`Error in getProjectById: ${error.message}`, error);
+        res.status(500).json({ error: "Error retrieving project" });
     }
 }
 
-// Update project by project ID
+// Update project
 async function updateProject(req, res) {
     try {
         const { id } = req.params;
         const { project_name, description, start_date, end_date, status } = req.body;
-        const [updated] = await Project.update(
-            { project_name, description, start_date, end_date, status },
-            { where: { project_id: id, owner_id: req.user?.id } }
-        );
-        if (!updated) return res.status(404).json({ error: 'Project not found or unauthorized' });
-        res.json({ message: 'Project updated successfully' });
+        const ownerId = req.user?.id;
+
+        if (!ownerId) {
+            logger.warn("Unauthorized: Owner ID is required");
+            return res.status(401).json({ error: "Unauthorized: Owner ID is required" });
+        }
+
+        logger.info(`Updating project with ID: ${id} for user ID: ${ownerId}`);
+
+        const project = await Project.findOne({
+            where: { project_id: id, owner_id: ownerId },
+        });
+
+        if (!project) {
+            logger.warn("Project not found or unauthorized access.");
+            return res.status(404).json({ error: "Project not found or unauthorized access" });
+        }
+
+        const updatedProject = await project.update({
+            project_name,
+            description,
+            start_date,
+            end_date,
+            status,
+        });
+
+        logger.info(`Project updated successfully: ${updatedProject.project_id}`);
+        res.status(200).json({ message: "Project updated successfully", project: updatedProject });
     } catch (error) {
-        console.error("Error in updateProject:", error);
-        res.status(500).json({ error: 'Error updating project' });
+        logger.error(`Error in updateProject: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating project", details: error.message });
     }
 }
 
-// Add a collaborator to a project
+// Add Collaborator
 async function addCollaborator(req, res) {
-    const { project_id } = req.params;
-    const { email, role } = req.body;
-
     try {
-        const project = await Project.findOne({ where: { project_id, owner_id: req.user.id } });
-        if (!project) {
-            return res.status(403).json({ error: "You do not have permission to add collaborators to this project" });
+        logger.info(`Request Params: ${JSON.stringify(req.params)}`);
+        logger.info(`Request Body: ${JSON.stringify(req.body)}`);
+
+        const { id: project_id } = req.params;
+        let { email, role } = req.body;
+
+        if (!project_id) {
+            logger.error("Invalid or missing project_id in request parameters.");
+            return res.status(400).json({ error: "Invalid or missing project_id in request parameters." });
         }
 
         const collaborator = await User.findOne({ where: { email } });
+
         if (!collaborator) {
+            logger.error(`Collaborator not found for email: ${email}`);
             return res.status(404).json({ error: 'Collaborator not found' });
         }
 
-        const existingCollaboration = await ProjectCollaborators.findOne({
-            where: { project_id, user_id: collaborator.user_id }
+        const existingCollaboration = await ProjectCollaborator.findOne({
+            where: { project_id, user_id: collaborator.user_id },
         });
+
         if (existingCollaboration) {
+            logger.warn('User is already a collaborator on this project.');
             return res.status(400).json({ error: 'User is already a collaborator on this project' });
         }
 
-        const newCollaboration = await ProjectCollaborators.create({
+        const parsedRole = parseInt(role, 10);
+        if (isNaN(parsedRole)) {
+            logger.error(`Invalid integer role supplied: ${role}`);
+            return res.status(400).json({ error: 'Invalid role supplied. Must be an integer.' });
+        }
+
+        const newCollaboration = await ProjectCollaborator.create({
             project_id,
             user_id: collaborator.user_id,
-            role,
-            assigned_at: new Date()
+            role: parsedRole,
         });
 
+        logger.info(`Collaborator added successfully: ${JSON.stringify(newCollaboration)}`);
         res.status(201).json({
             message: 'Collaborator added successfully',
-            collaboration: newCollaboration
+            collaboration: newCollaboration,
         });
     } catch (error) {
-        console.error("Error in addCollaborator:", error);
-        res.status(500).json({ error: 'Error adding collaborator' });
+        logger.error(`Error in addCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: 'Error adding collaborator', details: error.message });
     }
 }
-// controllers/projectController.js
 
-// Get all collaborators for a project
+// Get Collaborators
 async function getCollaborators(req, res) {
     try {
-        const { project_id } = req.params;
-
-        // Query collaborators with associated user details using correct alias
-        const collaborators = await ProjectCollaborators.findAll({
-            where: { project_id },
-            include: [{ model: User, as: 'user', attributes: ['email', 'first_name', 'last_name'] }]
+        const { id } = req.params; // 'id' is the project_id
+        const collaborators = await ProjectCollaborator.findAll({
+            where: { project_id: id },
+            include: [{
+                model: User,
+                as: 'user',
+                attributes: ['user_id', 'first_name', 'last_name', 'email'],
+            }],
         });
-
+        logger.info(`Collaborators retrieved for project ID ${id}: ${collaborators.length}`);
         res.status(200).json(collaborators);
     } catch (error) {
-        console.error("Error in getCollaborators:", error);
+        logger.error(`Error in getCollaborators: ${error.message}`, error);
         res.status(500).json({ error: "Error retrieving collaborators" });
     }
 }
 
-// New function to get all stages for a project
+// Get Stages
 async function getStages(req, res) {
     try {
         const { project_id } = req.params;
         const stages = await Stage.findAll({ where: { project_id } });
+        logger.info(`Stages retrieved for project_id ${project_id}: ${stages.length}`);
         res.status(200).json(stages);
     } catch (error) {
-        console.error("Error in getStages:", error);
+        logger.error(`Error in getStages: ${error.message}`, error);
         res.status(500).json({ error: "Error retrieving stages" });
     }
 }
 
-// Get a specific stage by ID
+// Get Stage By ID
 async function getStageById(req, res) {
     try {
         const { project_id, stage_id } = req.params;
-        console.log("Fetching stage with project_id:", project_id, "and stage_id:", stage_id);
+        logger.info(`Fetching stage with project_id: ${project_id} and stage_id: ${stage_id}`);
 
-        // Ensure `project_id` and `stage_id` are integers for query matching
         const stage = await Stage.findOne({
             where: {
                 project_id: parseInt(project_id, 10),
@@ -290,19 +521,19 @@ async function getStageById(req, res) {
         });
 
         if (!stage) {
-            console.log("Stage not found for project:", project_id, "and stage_id:", stage_id);
+            logger.warn(`Stage not found for project_id: ${project_id} and stage_id: ${stage_id}`);
             return res.status(404).json({ error: 'Stage not found or unauthorized' });
         }
 
-        console.log("Stage found:", stage);  // Log the retrieved stage
+        logger.info(`Stage found: ${stage.stage_id} in project ${project_id}`);
         res.status(200).json(stage);
     } catch (error) {
-        console.error("Error in getStageById:", error);
+        logger.error(`Error in getStageById: ${error.message}`, error);
         res.status(500).json({ error: "Error retrieving stage" });
     }
 }
 
-// New function to create a custom stage
+// Create Stage
 async function createStage(req, res) {
     try {
         const { project_id } = req.params;
@@ -316,119 +547,206 @@ async function createStage(req, res) {
             is_custom: true
         });
 
+        logger.info(`Custom stage created successfully: ${newStage.stage_id} in project ${project_id}`);
         res.status(201).json({ message: 'Custom stage created successfully', stage: newStage });
     } catch (error) {
-        console.error("Error in createStage:", error);
+        logger.error(`Error in createStage: ${error.message}`, error);
         res.status(500).json({ error: "Error creating stage" });
     }
 }
 
-// Update an existing stage
+// Update Stage
 async function updateStage(req, res) {
     try {
         const { project_id, stage_id } = req.params;
         const { stage_name, description, stage_order } = req.body;
+
+        logger.info(`Updating stage with ID: ${stage_id} in project: ${project_id}`);
 
         const [updated] = await Stage.update(
             { stage_name, description, stage_order },
             { where: { project_id, stage_id, is_custom: true } }
         );
 
-        if (!updated) return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        if (!updated) {
+            logger.warn(`Stage not found or unauthorized for update: project_id=${project_id}, stage_id=${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage updated successfully: ${stage_id} in project ${project_id}`);
         res.json({ message: 'Stage updated successfully' });
     } catch (error) {
-        console.error("Error in updateStage:", error);
+        logger.error(`Error in updateStage: ${error.message}`, error);
         res.status(500).json({ error: "Error updating stage" });
     }
 }
 
-// Delete an existing custom stage
+// Delete Stage
 async function deleteStage(req, res) {
     try {
         const { project_id, stage_id } = req.params;
+
+        logger.info(`Deleting stage with ID: ${stage_id} from project: ${project_id}`);
 
         const deleted = await Stage.destroy({
             where: { project_id, stage_id, is_custom: true }
         });
 
-        if (!deleted) return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        if (!deleted) {
+            logger.warn(`Stage not found or unauthorized for deletion: project_id=${project_id}, stage_id=${stage_id}`);
+            return res.status(404).json({ error: 'Stage not found or unauthorized' });
+        }
+
+        logger.info(`Stage deleted successfully: ${stage_id} from project ${project_id}`);
         res.json({ message: 'Stage deleted successfully' });
     } catch (error) {
-        console.error("Error in deleteStage:", error);
+        logger.error(`Error in deleteStage: ${error.message}`, error);
         res.status(500).json({ error: "Error deleting stage" });
     }
 }
 
-// Update a collaborator's role
+// Update Collaborator
 async function updateCollaborator(req, res) {
     try {
-        const { project_id, collaborator_id } = req.params;
+        const { id: project_id, collaborator_id } = req.params;
         const { role } = req.body;
 
-        const [updated] = await ProjectCollaborators.update(
-            { role },
+        logger.info(`Updating collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}, role=${role}`);
+
+        if (!project_id || !collaborator_id) {
+            logger.error("Missing project_id or collaborator_id.");
+            return res.status(400).json({ error: "Missing project_id or collaborator_id." });
+        }
+
+        const parsedRole = parseInt(role, 10);
+        if (isNaN(parsedRole)) {
+            logger.error(`Invalid or missing integer role: ${role}`);
+            return res.status(400).json({ error: "Invalid or missing integer role in request body." });
+        }
+
+        logger.info(`Updating collaborator with: project_id=${project_id}, collaborator_id=${collaborator_id}, parsedRole=${parsedRole}`);
+
+        const [updated] = await ProjectCollaborator.update(
+            { role: parsedRole },
             { where: { project_id, collaborator_id } }
         );
-        if (!updated) return res.status(404).json({ error: 'Collaborator not found or unauthorized' });
-        res.json({ message: 'Collaborator role updated successfully' });
+
+        if (!updated) {
+            logger.warn("Collaborator not found or unauthorized.");
+            return res.status(404).json({ error: "Collaborator not found or unauthorized" });
+        }
+
+        logger.info("Collaborator role updated successfully.");
+        res.json({ message: "Collaborator role updated successfully" });
     } catch (error) {
-        console.error("Error in updateCollaborator:", error);
-        res.status(500).json({ error: 'Error updating collaborator' });
+        logger.error(`Error in updateCollaborator: ${error.message}`, error);
+        res.status(500).json({ error: "Error updating collaborator" });
     }
 }
 
-// Delete a collaborator from a project
+// Delete Collaborator
 async function deleteCollaborator(req, res) {
     try {
-        const { project_id, collaborator_id } = req.params;
+        const { id, collaborator_id } = req.params; // 'id' is project_id
+        const project_id = parseInt(id, 10);
+        const collaborator_id_int = parseInt(collaborator_id, 10);
 
-        const deleted = await ProjectCollaborators.destroy({
-            where: { project_id, collaborator_id }
+        logger.info(`Deleting collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}`);
+
+        if (isNaN(project_id) || isNaN(collaborator_id_int)) {
+            logger.warn('Invalid project_id or collaborator_id provided.');
+            return res.status(400).json({ error: 'Invalid project ID or collaborator ID.' });
+        }
+
+        // Find the collaborator entry
+        const collaborator = await ProjectCollaborator.findOne({
+            where: {
+                project_id,
+                collaborator_id: collaborator_id_int,
+            },
         });
-        if (!deleted) return res.status(404).json({ error: 'Collaborator not found or unauthorized' });
+
+        if (!collaborator) {
+            logger.warn(`Collaborator with ID ${collaborator_id_int} not found in project ${project_id}.`);
+            return res.status(404).json({ error: 'Collaborator not found for this project.' });
+        }
+
+        // Check for ongoing task assignments
+        const ongoingTasks = await Task.findAll({
+            where: {
+                project_id,
+                is_completed: false,
+            },
+            include: [
+                {
+                    model: TaskAssignment,
+                    as: 'taskAssignments', // Ensure this matches your Task model association
+                    where: {
+                        user_id: collaborator.user_id,
+                    },
+                    required: true,
+                },
+            ],
+        });
+
+        if (ongoingTasks.length > 0) {
+            logger.warn(`Collaborator ID ${collaborator.user_id} has ongoing tasks in project ${project_id}.`);
+            return res.status(400).json({
+                error: 'Cannot remove collaborator with ongoing task assignments.',
+            });
+        }
+
+        // Proceed to delete the collaborator
+        await collaborator.destroy();
+
+        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id_int} from project_id=${project_id}`);
         res.json({ message: 'Collaborator removed successfully' });
     } catch (error) {
-        console.error("Error in deleteCollaborator:", error);
+        logger.error(`Error in deleteCollaborator: ${error.message}`, error);
         res.status(500).json({ error: 'Error removing collaborator' });
     }
 }
 
-// Delete project by project ID
+// Delete Project
 async function deleteProject(req, res) {
     try {
         const { id } = req.params;
+        logger.info(`Deleting project with ID: ${id} by user ID: ${req.user?.id}`);
+
         const deleted = await Project.destroy({ where: { project_id: id, owner_id: req.user?.id } });
-        if (!deleted) return res.status(404).json({ error: 'Project not found or unauthorized' });
+        if (!deleted) {
+            logger.warn(`Project not found or unauthorized for deletion: project_id=${id}`);
+            return res.status(404).json({ error: 'Project not found or unauthorized' });
+        }
+        logger.info(`Project deleted successfully: project_id=${id}`);
         res.json({ message: 'Project deleted successfully' });
     } catch (error) {
-        console.error("Error in deleteProject:", error);
+        logger.error(`Error in deleteProject: ${error.message}`, error);
         res.status(500).json({ error: 'Error deleting project' });
     }
 }
-// testing start
 
+// Testing start
 const testProjectCollaboratorsAssociation = async (req, res) => {
     try {
-        // Attempt to retrieve all ProjectCollaborators with their associated Project
-        const collaborators = await ProjectCollaborators.findAll({
+        const collaborators = await ProjectCollaborator.findAll({
             include: [
                 {
                     model: Project,
-                    as: 'project'  // Ensure this matches the alias in your model
+                    as: 'project'
                 }
             ]
         });
 
+        logger.info(`Testing ProjectCollaborators association: Retrieved ${collaborators.length} collaborators.`);
         res.status(200).json(collaborators);
     } catch (error) {
-        console.error("Error in testProjectCollaboratorsAssociation:", error);
+        logger.error(`Error in testProjectCollaboratorsAssociation: ${error.message}`, error);
         res.status(500).json({ error: "Error testing ProjectCollaborators association" });
     }
 };
+// Testing stop
 
-
-
-///testing stop
 module.exports = {
     createProject,
     getAllProjects,
@@ -446,5 +764,5 @@ module.exports = {
     deleteCollaborator,
     deleteProject,
     isProjectOwner,
-    testProjectCollaboratorsAssociation  // Added a comma before this line
+    testProjectCollaboratorsAssociation,
 };

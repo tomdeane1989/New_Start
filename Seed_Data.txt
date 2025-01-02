@@ -1,0 +1,48 @@
+INSERT INTO users (username, email, password_hash, is_active, created_at, updated_at)
+VALUES
+('buyer_user', 'buyer@example.com', 'hashed_password', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('seller_user', 'seller@example.com', 'hashed_password', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('estate_agent_user', 'agent@example.com', 'hashed_password', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('mortgage_advisor_user', 'advisor@example.com', 'hashed_password', TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+
+INSERT INTO projects (project_name, description, status, start_date, end_date, created_at, updated_at)
+VALUES
+('Project A', 'A project involving Buyer and Seller', 'active', CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+('Project B', 'A project with additional stakeholders', 'active', CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+
+INSERT INTO projectcollaborators (project_id, user_id, role_id, assigned_at, is_owner, created_at, updated_at)
+VALUES
+-- Project A Collaborators
+((SELECT project_id FROM projects WHERE project_name = 'Project A'),
+ (SELECT user_id FROM users WHERE username = 'buyer_user'),
+ (SELECT role_id FROM roles WHERE role_name = 'Buyer'), CURRENT_TIMESTAMP, TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+((SELECT project_id FROM projects WHERE project_name = 'Project A'),
+ (SELECT user_id FROM users WHERE username = 'seller_user'),
+ (SELECT role_id FROM roles WHERE role_name = 'Seller'), CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+-- Project B Collaborators
+((SELECT project_id FROM projects WHERE project_name = 'Project B'),
+ (SELECT user_id FROM users WHERE username = 'estate_agent_user'),
+ (SELECT role_id FROM roles WHERE role_name = 'Estate Agent'), CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+
+((SELECT project_id FROM projects WHERE project_name = 'Project B'),
+ (SELECT user_id FROM users WHERE username = 'mortgage_advisor_user'),
+ (SELECT role_id FROM roles WHERE role_name = 'Mortgage Advisor'), CURRENT_TIMESTAMP, FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+
+ INSERT INTO stages (project_id, stage_name, stage_order, description, is_custom, created_at, updated_at)
+VALUES
+((SELECT project_id FROM projects WHERE project_name = 'Project A'), 'Initial Inquiry', 1, 'Beginning stage for inquiries', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project A'), 'Offer Accepted', 2, 'Stage where offer is accepted', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project A'), 'Secure Mortgage in Principal', 3, 'Getting mortgage approved', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project A'), 'Inspections & Conveyancing', 4, 'Stage for legal due diligence', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project A'), 'Completion', 5, 'Get to the key handover', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project B'), 'Initial Inquiry', 1, 'Beginning stage for inquiries', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project B'), 'Offer Accepted', 2, 'Stage where offer is accepted', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project B'), 'Secure Mortgage in Principal', 3, 'Getting mortgage approved', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project B'), 'Inspections & Conveyancing', 4, 'Stage for legal due diligence', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+((SELECT project_id FROM projects WHERE project_name = 'Project B'), 'Completion', 5, 'Get to the key handover', FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
