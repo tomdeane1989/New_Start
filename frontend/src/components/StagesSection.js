@@ -1,237 +1,201 @@
 // src/components/StagesSection.js
-
 import React, { useState } from 'react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import TaskForm from './TaskForm';
-import { Table, Button, Form, Modal } from 'react-bootstrap';
+import { Accordion, Table, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
+import { FaCheck, FaCheckCircle, FaPaperclip } from 'react-icons/fa';
 
-function StagesSection({ projectId, stages, refetchProject }) {
-  const [currentStage, setCurrentStage] = useState(null);
+function StagesSection({ projectId, stages, refetchProject, collaborators = [] }) {
   const [showTaskForm, setShowTaskForm] = useState(false);
-  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [taskToDelete, setTaskToDelete] = useState(null);
+  const [taskToEdit, setTaskToEdit] = useState(null);
+  const [mode, setMode] = useState('create');
 
   const navigate = useNavigate();
 
-  // Remove any success toast here. Let TaskForm handle success for create/edit.
+  // Edit Task
+  const handleEditTask = async (task) => {
+    try {
+      const token = localStorage.getItem('jwtToken');
+      if (!token) {
+        toast.warn('You must be logged in to edit a task.');
+        return;
+      }
+      const response = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/${task.task_id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setTaskToEdit(response.data);
+      setMode('edit');
+      setShowTaskForm(true);
+    } catch (error) {
+      toast.error('Failed to fetch task for editing.');
+    }
+  };
+
+  // Create Task
   const handleCreateTask = () => {
+    setTaskToEdit(null);
+    setMode('create');
+    setShowTaskForm(true);
+  };
+
+  // After form submission
+  const handleTaskFormSubmit = () => {
     setShowTaskForm(false);
-    setCurrentStage(null);
+    setTaskToEdit(null);
     refetchProject();
   };
 
-  const handleEditTaskRedirect = (task) => {
-    navigate(`/projects/${projectId}/tasks/${task.task_id}/edit`);
-  };
-
-  const handleDeleteTask = async () => {
+  // Complete Task inline
+  const handleCompleteTask = async (task) => {
     const token = localStorage.getItem('jwtToken');
-    try {
-      await axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskToDelete.task_id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      toast.success('Task deleted successfully!');
-      setShowDeleteModal(false);
-      setTaskToDelete(null);
-      refetchProject();
-    } catch (error) {
-      console.error('Error deleting task:', error);
-      // We will keep an error toast for when deletion fails, as it does not cause double toasts
-      toast.error('Failed to delete task.');
-    }
-  };
-
-  const handleDeleteSelectedTasks = async () => {
-    const token = localStorage.getItem('jwtToken');
-    if (selectedTaskIds.length === 0) {
-      toast.warn('No tasks selected.');
+    if (!token) {
+      toast.warn('You must be logged in to complete a task.');
       return;
     }
-    if (window.confirm('Are you sure you want to delete selected tasks?')) {
-      try {
-        await Promise.all(
-          selectedTaskIds.map((taskId) =>
-            axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
-              headers: { Authorization: `Bearer ${token}` },
-            })
-          )
-        );
-        // Remove success toast for bulk deletion as well
-        setSelectedTaskIds([]);
-        refetchProject();
-      } catch (error) {
-        console.error('Error deleting tasks:', error);
-        toast.error('Failed to delete selected tasks.');
-      }
+    try {
+      await axios.put(`${process.env.REACT_APP_API_URL}/tasks/${task.task_id}/complete`, {}, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      toast.success('Task marked as completed!');
+      refetchProject();
+    } catch (err) {
+      toast.error('Could not complete task.');
     }
   };
 
-  const handleTaskCheckboxChange = (taskId, checked) => {
-    setSelectedTaskIds((prev) => {
-      if (checked) return [...prev, taskId];
-      return prev.filter((id) => id !== taskId);
+  const renderDocsTooltip = (task) => {
+    if (!task.documents || task.documents.length === 0) return null;
+
+    const docLines = task.documents.map((d, idx) => {
+      const tag = d.tags && d.tags.length > 0 ? d.tags[0] : '(No Tag)';
+      const orig = d.original_filename || d.file_name || 'unknown';
+      const user = d.uploaded_by || 'unknown user';
+      const dateStr = d.uploaded_date ? new Date(d.uploaded_date).toLocaleString() : 'unknown date';
+      return (
+        <div key={d.document_id}>
+          <strong>{tag}</strong> | {orig} | {user} | {dateStr}
+        </div>
+      );
     });
+
+    return (
+      <OverlayTrigger
+        placement="top"
+        overlay={<Tooltip id={`tooltip-docs-${task.task_id}`}>{docLines}</Tooltip>}
+      >
+        <FaPaperclip style={{ marginLeft: '8px', cursor: 'pointer' }} />
+      </OverlayTrigger>
+    );
+  };
+
+  const renderTaskCell = (task) => {
+    const isCompleted = task.is_completed;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        {task.task_name}
+        {isCompleted && (
+          <FaCheckCircle size="1em" style={{ color: 'green', marginLeft: '5px' }} />
+        )}
+        {task.documents && task.documents.length > 0 && renderDocsTooltip(task)}
+      </div>
+    );
   };
 
   return (
-    <div className="stages-section section">
-      <h2>Stages &amp; Tasks</h2>
-      {stages.length > 0 ? (
-        stages
-          .sort((a, b) => a.stage_order - b.stage_order)
-          .map((stage) => (
-            <div key={stage.stage_id} className="stage-container mb-4">
-              <h3>{stage.stage_name}</h3>
+    <div className="stages-section section mt-4">
+      <div className="d-flex justify-content-between align-items-center mb-3">
+        <h2>Stages</h2>
+        <Button variant="success" onClick={handleCreateTask}>
+          Add Task
+        </Button>
+      </div>
 
-              {stage.tasks && stage.tasks.length > 0 ? (
-                <div className="table-responsive">
-                  <Table striped bordered hover>
-                    <thead>
-                      <tr>
-                        <th>
-                          <Form.Check
-                            type="checkbox"
-                            checked={
-                              stage.tasks.length > 0 &&
-                              stage.tasks.every(task => selectedTaskIds.includes(task.task_id))
-                            }
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              const taskIds = stage.tasks.map(task => task.task_id);
-                              setSelectedTaskIds(prev => {
-                                if (checked) {
-                                  return [...new Set([...prev, ...taskIds])];
-                                } else {
-                                  return prev.filter(id => !taskIds.includes(id));
-                                }
-                              });
-                            }}
-                          />
-                        </th>
-                        <th>Name</th>
-                        <th>Description</th>
-                        <th>Due Date</th>
-                        <th>Priority</th>
-                        <th>Completed</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {stage.tasks.map((task) => (
-                        <tr key={task.task_id}>
-                          <td>
-                            <Form.Check
-                              type="checkbox"
-                              checked={selectedTaskIds.includes(task.task_id)}
-                              onChange={(e) =>
-                                handleTaskCheckboxChange(task.task_id, e.target.checked)
-                              }
-                            />
-                          </td>
-                          <td>{task.task_name}</td>
-                          <td>{task.description || '-'}</td>
-                          <td>{task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'}</td>
-                          <td>
-                            <span className={`badge bg-${task.priority ? task.priority.toLowerCase() : 'secondary'}`}>
-                              {task.priority || 'N/A'}
-                            </span>
-                          </td>
-                          <td>
-                            {task.is_completed ? (
-                              <span className="badge bg-success">Yes</span>
-                            ) : (
-                              <span className="badge bg-secondary">No</span>
-                            )}
-                          </td>
-                          <td>
-                            <Button
-                              variant="outline-primary"
-                              size="sm"
-                              className="me-2"
-                              onClick={() => handleEditTaskRedirect(task)}
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              variant="outline-danger"
-                              size="sm"
-                              onClick={() => {
-                                setTaskToDelete(task);
-                                setShowDeleteModal(true);
-                              }}
-                            >
-                              Delete
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </Table>
-                </div>
-              ) : (
-                <p>No tasks in this stage.</p>
-              )}
-
-              <Button
-                variant="success"
-                onClick={() => {
-                  console.log('StagesSection: Selected stage_id:', stage.stage_id);
-                  setCurrentStage(stage);
-                  setShowTaskForm(true);
-                }}
-              >
-                Add Task
-              </Button>
-            </div>
-          ))
+      {stages && stages.length > 0 ? (
+        <Accordion defaultActiveKey="0" alwaysOpen>
+          {stages
+            .sort((a, b) => a.stage_order - b.stage_order)
+            .map((stage, idx) => (
+              <Accordion.Item eventKey={String(idx)} key={stage.stage_id}>
+                <Accordion.Header>
+                  <strong>Stage {stage.stage_order}: {stage.stage_name}</strong>
+                </Accordion.Header>
+                <Accordion.Body>
+                  {stage.tasks && stage.tasks.length > 0 ? (
+                    <div className="table-responsive">
+                      <Table hover borderless>
+                        <thead>
+                          <tr>
+                            <th>Task</th>
+                            <th>Due Date</th>
+                            <th style={{ width: '30%' }}>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {stage.tasks.map((task) => {
+                            const isCompleted = task.is_completed;
+                            return (
+                              <tr key={task.task_id}
+                                style={{
+                                  backgroundColor: isCompleted ? '#e2e3e5' : '',
+                                  opacity: isCompleted ? 0.8 : 1,
+                                }}
+                              >
+                                <td>{renderTaskCell(task)}</td>
+                                <td>{task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'}</td>
+                                <td>
+                                  <Button
+                                    variant="outline-success"
+                                    size="sm"
+                                    className="me-2"
+                                    disabled={isCompleted}
+                                    onClick={() => handleCompleteTask(task)}
+                                  >
+                                    <FaCheck />
+                                  </Button>
+                                  <Button
+                                    variant="outline-primary"
+                                    size="sm"
+                                    className="me-2"
+                                    onClick={() => handleEditTask(task)}
+                                  >
+                                    Edit
+                                  </Button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </Table>
+                    </div>
+                  ) : (
+                    <p>No tasks in this stage yet.</p>
+                  )}
+                </Accordion.Body>
+              </Accordion.Item>
+            ))}
+        </Accordion>
       ) : (
         <p>No stages found.</p>
       )}
 
-      {showTaskForm && currentStage && (
+      {showTaskForm && (
         <TaskForm
-          key={`create-${currentStage.stage_id}-${Date.now()}`}
-          mode="create"
-          taskData={null}
-          onSubmit={handleCreateTask}
+          mode={mode}
+          taskData={taskToEdit}
+          onSubmit={handleTaskFormSubmit}
           onCancel={() => {
             setShowTaskForm(false);
-            setCurrentStage(null);
+            setTaskToEdit(null);
           }}
           stages={stages}
-          initialStageId={currentStage ? String(currentStage.stage_id) : ''}
+          initialStageId={mode === 'edit' && taskToEdit ? String(taskToEdit.stage_id) : ''}
           projectId={projectId}
-          isModal={true}
+          isModal
+          collaborators={collaborators}
         />
       )}
-
-      {selectedTaskIds.length > 0 && (
-        <div className="d-flex justify-content-end mt-3">
-          <Button variant="danger" onClick={handleDeleteSelectedTasks}>
-            Delete Selected Tasks
-          </Button>
-        </div>
-      )}
-
-      <Modal show={showDeleteModal} onHide={() => setShowDeleteModal(false)}>
-        <Modal.Header closeButton>
-          <Modal.Title>Confirm Task Deletion</Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          Are you sure you want to delete the task "{taskToDelete?.task_name}"?
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={() => setShowDeleteModal(false)}>
-            Cancel
-          </Button>
-          <Button variant="danger" onClick={handleDeleteTask}>
-            Delete
-          </Button>
-        </Modal.Footer>
-      </Modal>
     </div>
   );
 }

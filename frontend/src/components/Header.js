@@ -1,39 +1,59 @@
 // src/components/Header.js
-
 import React, { useContext } from 'react';
-import { Link } from 'react-router-dom'; // Import Link from react-router-dom
-import { Navbar, Nav, Container, Button } from 'react-bootstrap'; // Import necessary Bootstrap components
+import { Link, useNavigate } from 'react-router-dom';
+import { Navbar, Nav, Container, Button } from 'react-bootstrap';
 import { AuthContext } from '../context/AuthContext';
 
 function Header() {
   const { isAuthenticated, logout } = useContext(AuthContext);
+  const navigate = useNavigate();
 
   const handleLogout = () => {
     logout();
-    localStorage.removeItem('jwtToken');
-    window.location.href = '/login';
+    navigate('/login');
   };
 
   return (
-    <Navbar bg="light" expand="lg" className="mb-4">
+    <Navbar bg="primary" variant="dark" expand="lg" className="shadow-sm">
       <Container>
         <Navbar.Brand as={Link} to="/">
-          TD TEST PROJECT 
+          <img
+            src="/logo.png"
+            alt="Project Logo"
+            height="30"
+            className="d-inline-block align-top me-2"
+          />
+          TD TEST PROJECT
         </Navbar.Brand>
-        <Navbar.Toggle aria-controls="basic-navbar-nav" />
-        <Navbar.Collapse id="basic-navbar-nav">
+        <Navbar.Toggle aria-controls="navbar-nav" />
+        <Navbar.Collapse id="navbar-nav">
           <Nav className="ms-auto">
             {!isAuthenticated ? (
               <>
-                <Nav.Link as={Link} to="/register">Register</Nav.Link>
-                <Nav.Link as={Link} to="/login">Login</Nav.Link>
+                <Nav.Link as={Link} to="/register" className="me-3">
+                  Register
+                </Nav.Link>
+                <Nav.Link as={Link} to="/login">
+                  Login
+                </Nav.Link>
               </>
             ) : (
               <>
-                <Nav.Link as={Link} to="/dashboard">Dashboard</Nav.Link>
-                <Nav.Link as={Link} to="/profile">Profile</Nav.Link>
-                <Nav.Link as={Link} to="/projects">Projects</Nav.Link>
-                <Button variant="outline-secondary" onClick={handleLogout} className="ms-2">
+                <Nav.Link as={Link} to="/dashboard" className="me-3">
+                  Dashboard
+                </Nav.Link>
+                <Nav.Link as={Link} to="/profile" className="me-3">
+                  Profile
+                </Nav.Link>
+                <Nav.Link as={Link} to="/projects" className="me-3">
+                  Projects
+                </Nav.Link>
+                {/* New link to Documents */}
+                <Nav.Link as={Link} to="/documents" className="me-3">
+                  Documents
+                </Nav.Link>
+
+                <Button variant="outline-light" onClick={handleLogout}>
                   Logout
                 </Button>
               </>

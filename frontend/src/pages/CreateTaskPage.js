@@ -5,7 +5,7 @@ import TaskForm from '../components/TaskForm';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Container, Spinner, Button } from 'react-bootstrap';
+import { Container, Spinner, Alert, Button } from 'react-bootstrap';
 import Header from '../components/Header';
 
 const CreateTaskPage = () => {
@@ -34,7 +34,7 @@ const CreateTaskPage = () => {
         const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
           headers: { Authorization: `Bearer ${token}` }
         });
-        console.log('Fetched stages:', response.data);
+        // console.log('Fetched stages:', response.data);
         setStages(response.data);
         if (response.data.length > 0) {
           setInitialStageId(String(response.data[0].stage_id)); // Preselect the first stage
@@ -60,7 +60,8 @@ const CreateTaskPage = () => {
         return;
       }
 
-      console.log('Creating task with data:', taskData);
+      // Remove console.log in production
+      // console.log('Creating task with data:', taskData);
 
       await axios.post(
         `${process.env.REACT_APP_API_URL}/tasks`,
@@ -78,10 +79,10 @@ const CreateTaskPage = () => {
       toast.success('Task created successfully!');
       navigate(`/projects/${projectId}`); // Redirect to project details page after creation
     } catch (error) {
-      console.error('Error creating task:', error);
+      // Remove or comment out the console.log in production
+      // console.error('Error creating task:', error);
       if (error.response) {
         console.error('Error Response Data:', error.response.data);
-        // Adjust the error message based on your backend's response structure
         toast.error(`Failed to create task: ${error.response.data.error || 'Unknown error.'}`);
       } else {
         toast.error('Failed to create task.');
@@ -135,6 +136,7 @@ const CreateTaskPage = () => {
           stages={stages}
           initialStageId={initialStageId} // Preselect the first stage
           projectId={projectId} // Pass projectId as prop
+          isModal={false} // Render as standalone form
         />
       </Container>
     </>

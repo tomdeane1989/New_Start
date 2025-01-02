@@ -1,4 +1,6 @@
 // models/taskassignment.js
+// Backend/models/taskAssignment.js
+
 module.exports = (sequelize, DataTypes) => {
     const TaskAssignment = sequelize.define('TaskAssignment', {
         assignment_id: {
@@ -25,7 +27,7 @@ module.exports = (sequelize, DataTypes) => {
     }, {
         tableName: 'taskassignments',
         timestamps: false,
-        modelName: 'TaskAssignment', // Ensure modelName is set so references to models.TaskAssignment work correctly
+        modelName: 'TaskAssignment',
     });
 
     // Define associations

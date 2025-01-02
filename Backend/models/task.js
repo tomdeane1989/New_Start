@@ -7,24 +7,36 @@ module.exports = (sequelize) => {
       this.belongsTo(models.Stage, {
         foreignKey: 'stage_id',
         as: 'stage',
-        //onDelete: 'CASCADE', // If a stage is removed, tasks should be removed as well
         hooks: true,
       });
       this.belongsTo(models.Project, {
         foreignKey: 'project_id',
         as: 'project',
-        //onDelete: 'CASCADE', // If a project is removed, tasks should be removed
         hooks: true,
       });
       this.belongsTo(models.User, {
         foreignKey: 'owner_id',
         as: 'owner',
-        onDelete: 'SET NULL', // If the user is deleted, owner_id is set to NULL
+        onDelete: 'SET NULL',
       });
       this.belongsToMany(models.User, {
         through: models.TaskAssignment,
         as: 'assigned_users',
         foreignKey: 'task_id',
+      });
+
+      // **New Association**
+      this.hasMany(models.TaskAssignment, {
+        foreignKey: 'task_id',
+        as: 'taskAssignments', // This alias should match the one used in controller
+        onDelete: 'CASCADE', // Optional: Define behavior on task deletion
+        hooks: true,
+      });
+      this.belongsToMany(models.Document, {
+        through: models.TaskDocument,
+        foreignKey: 'task_id',
+        otherKey: 'document_id',
+        as: 'documents',
       });
     }
   }
@@ -36,14 +48,13 @@ module.exports = (sequelize) => {
         primaryKey: true,
         autoIncrement: true,
       },
-      // Make sure stage_id is defined and allowNull is true to avoid constraint errors
       stage_id: {
         type: DataTypes.INTEGER,
-        allowNull: true, // Allow NULL to prevent constraint issues on deletion
+        allowNull: true,
       },
       project_id: {
         type: DataTypes.INTEGER,
-        allowNull: false, // Assuming a task must always have a project
+        allowNull: false,
       },
       task_name: {
         type: DataTypes.STRING,

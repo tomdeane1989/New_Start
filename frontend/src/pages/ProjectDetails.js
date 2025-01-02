@@ -1,10 +1,9 @@
 // src/pages/ProjectDetails.js
-
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { Container, Row, Col, Spinner, Button, Card, Alert } from 'react-bootstrap'; // Imported Alert
+import { Container, Spinner, Button, Card, Alert } from 'react-bootstrap';
 import CollaboratorsSection from '../components/CollaboratorsSection';
 import StagesSection from '../components/StagesSection';
 import Header from '../components/Header';
@@ -17,14 +16,13 @@ function ProjectDetails() {
   const [loading, setLoading] = useState(true);
   const [collaborators, setCollaborators] = useState([]);
 
-  // Define fetchProjectDetails outside of useEffect
   const fetchProjectDetails = async () => {
     try {
       const token = localStorage.getItem('jwtToken');
       const response = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      console.log('Project Data:', response.data); // Verify stages structure
+      console.log('Project Data:', response.data);
       setProject(response.data);
       setLoading(false);
     } catch (error) {
@@ -34,7 +32,6 @@ function ProjectDetails() {
     }
   };
 
-  // Define fetchCollaborators outside of useEffect
   const fetchCollaborators = async () => {
     try {
       const token = localStorage.getItem('jwtToken');
@@ -48,7 +45,6 @@ function ProjectDetails() {
     }
   };
 
-  // Define refetchProject to call both fetch functions
   const refetchProject = () => {
     fetchProjectDetails();
     fetchCollaborators();
@@ -85,9 +81,7 @@ function ProjectDetails() {
       <>
         <Header />
         <Container className="mt-5">
-          <Alert variant="danger">
-            Project not found or you do not have access.
-          </Alert>
+          <Alert variant="danger">Project not found or you do not have access.</Alert>
         </Container>
       </>
     );
@@ -97,7 +91,6 @@ function ProjectDetails() {
     <>
       <Header />
       <Container className="mt-5">
-        {/* Project Details */}
         <Card className="mb-4">
           <Card.Body>
             <Card.Title>{project.project_name}</Card.Title>
@@ -108,18 +101,18 @@ function ProjectDetails() {
           </Card.Body>
         </Card>
 
-        {/* Collaborators Section */}
         <CollaboratorsSection
           projectId={id}
           collaborators={collaborators}
           refetchCollaborators={fetchCollaborators}
         />
 
-        {/* Stages and Tasks Section */}
+        {/* Pass collaborators to StagesSection */}
         <StagesSection
           projectId={id}
           stages={project.stages}
           refetchProject={refetchProject}
+          collaborators={collaborators}
         />
       </Container>
     </>

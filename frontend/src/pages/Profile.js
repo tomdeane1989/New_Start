@@ -5,7 +5,7 @@ import { UserContext } from '../context/UserContext';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { Form, Button, Spinner, Alert } from 'react-bootstrap';
+import { Form, Button, Spinner, Alert, Container, Row, Col, Card } from 'react-bootstrap';
 import Header from '../components/Header';
 
 function Profile() {
@@ -42,7 +42,7 @@ function Profile() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData((prevData) => ({ ...prevData, [name]: value }));
+    setFormData({ ...formData, [name]: value });
   };
 
   const handleSubmit = async (e) => {
@@ -73,7 +73,6 @@ function Profile() {
 
       toast.success('Profile updated successfully!');
     } catch (err) {
-      console.error('Error updating profile:', err.response?.data || err.message);
       const errorMessage = err.response?.data?.error || 'Failed to update profile. Please try again.';
       setError(errorMessage);
       toast.error(errorMessage);
@@ -86,12 +85,12 @@ function Profile() {
     return (
       <>
         <Header />
-        <div className="container mt-5 text-center">
+        <Container className="mt-5 text-center">
           <Spinner animation="border" role="status">
             <span className="visually-hidden">Loading...</span>
           </Spinner>
           <p className="mt-3">Loading your profile...</p>
-        </div>
+        </Container>
       </>
     );
   }
@@ -103,81 +102,88 @@ function Profile() {
   return (
     <>
       <Header />
-      <div className="container mt-5">
-        <div className="section">
-          <h1>Your Profile</h1>
-          <Form onSubmit={handleSubmit} className="mt-4">
-            {error && <Alert variant="danger">{error}</Alert>}
+      <Container className="mt-5">
+        <Row className="justify-content-center">
+          <Col xs={12} md={8}>
+            <Card className="shadow-sm">
+              <Card.Body>
+                <h1>Your Profile</h1>
+                <Form onSubmit={handleSubmit} className="mt-4">
+                  {error && <Alert variant="danger">{error}</Alert>}
 
-            <Form.Group controlId="username" className="mb-3">
-              <Form.Label>Username:</Form.Label>
-              <Form.Control
-                type="text"
-                name="username"
-                value={formData.username}
-                onChange={handleChange}
-                placeholder="Enter your username"
-                required
-              />
-            </Form.Group>
+                  <Form.Group controlId="username" className="mb-3">
+                    <Form.Label>Username:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="username"
+                      value={formData.username}
+                      onChange={handleChange}
+                      placeholder="Enter your username"
+                      required
+                    />
+                  </Form.Group>
 
-            <Form.Group controlId="email" className="mb-3">
-              <Form.Label>Email:</Form.Label>
-              <Form.Control
-                type="email"
-                name="email"
-                value={formData.email}
-                onChange={handleChange}
-                placeholder="Enter your email"
-                required
-              />
-            </Form.Group>
+                  <Form.Group controlId="email" className="mb-3">
+                    <Form.Label>Email:</Form.Label>
+                    <Form.Control
+                      type="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleChange}
+                      placeholder="Enter your email"
+                      required
+                    />
+                  </Form.Group>
 
-            <Form.Group controlId="first_name" className="mb-3">
-              <Form.Label>First Name:</Form.Label>
-              <Form.Control
-                type="text"
-                name="first_name"
-                value={formData.first_name}
-                onChange={handleChange}
-                placeholder="Enter your first name"
-              />
-            </Form.Group>
+                  <Form.Group controlId="first_name" className="mb-3">
+                    <Form.Label>First Name:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="first_name"
+                      value={formData.first_name}
+                      onChange={handleChange}
+                      placeholder="Enter your first name"
+                    />
+                  </Form.Group>
 
-            <Form.Group controlId="last_name" className="mb-3">
-              <Form.Label>Last Name:</Form.Label>
-              <Form.Control
-                type="text"
-                name="last_name"
-                value={formData.last_name}
-                onChange={handleChange}
-                placeholder="Enter your last name"
-              />
-            </Form.Group>
+                  <Form.Group controlId="last_name" className="mb-3">
+                    <Form.Label>Last Name:</Form.Label>
+                    <Form.Control
+                      type="text"
+                      name="last_name"
+                      value={formData.last_name}
+                      onChange={handleChange}
+                      placeholder="Enter your last name"
+                    />
+                  </Form.Group>
 
-            <div className="d-flex justify-content-end">
-              <Button variant="secondary" onClick={() => navigate('/dashboard')} className="me-2">
-                Back to Dashboard
-              </Button>
-              <Button variant="primary" type="submit" disabled={isUpdating}>
-                {isUpdating ? (
-                  <>
-                    <Spinner
-                      as="span"
-                      animation="border"
-                      size="sm"
-                      role="status"
-                      aria-hidden="true"
-                    /> Saving...
-                  </>
-                ) : (
-                  'Save Changes'
-                )}
-              </Button>
-            </div>
-          </Form>
-        </div>
-      </div>
+                  <div className="d-flex justify-content-end">
+                    <Button variant="secondary" onClick={() => navigate('/dashboard')} className="me-2">
+                      Back to Dashboard
+                    </Button>
+                    <Button variant="primary" type="submit" disabled={isUpdating}>
+                      {isUpdating ? (
+                        <>
+                          <Spinner
+                            as="span"
+                            animation="border"
+                            size="sm"
+                            role="status"
+                            aria-hidden="true"
+                            className="me-2"
+                          /> Saving...
+                        </>
+                      ) : (
+                        'Save Changes'
+                      )}
+                    </Button>
+                  </div>
+                </Form>
+              </Card.Body>
+            </Card>
+          </Col>
+        </Row>
+      </Container>
     </>
   );
 }

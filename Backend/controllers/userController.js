@@ -10,28 +10,36 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key'; // Use environme
 // Backend/controllers/userController.js
 
 // Controller function to create a user
+// Backend/controllers/userController.js
+
 const createUser = async (req, res) => {
     try {
-        const { username, email, password } = req.body;
+        const { username, email, password, first_name, last_name } = req.body;
 
-        if (!username || !email || !password) {
-            logger.warn('Missing required fields: username, email, or password');
-            return res.status(400).json({ error: 'Missing required fields: username, email, or password' });
+        // Log the incoming request data for debugging
+        logger.debug(`Received data for new user: ${JSON.stringify({ username, email, first_name, last_name })}`);
+
+        // Validate required fields
+        if (!username || !email || !password || !first_name || !last_name) {
+            logger.warn('Missing required fields: username, email, password, first_name, or last_name');
+            return res.status(400).json({ error: 'Missing required fields: username, email, password, first_name, or last_name' });
         }
 
         logger.info(`Creating user: ${email}`);
 
-        // Create the user without manually hashing the password
+        // Create the user with all necessary fields
         const newUser = await User.create({
             username,
             email,
             password_hash: password, // Pass plaintext password; model's hook will hash it
+            first_name,
+            last_name,
         });
 
         logger.info(`User created successfully: user_id=${newUser.user_id}`);
         res.status(201).json({ message: 'User created successfully', user: newUser });
     } catch (error) {
-        logger.error(`Error creating user: ${error.message}`);
+        logger.error(`Error creating user: ${error.message}`, error);
         res.status(500).json({ error: 'Failed to create user', details: error.message });
     }
 };

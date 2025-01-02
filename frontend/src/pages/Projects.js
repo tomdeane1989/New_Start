@@ -28,7 +28,7 @@ function Projects() {
         setLoading(false);
       })
       .catch((error) => {
-        console.error('Error fetching projects:', error);
+        // Removed console.error for production
         toast.error('Failed to fetch projects');
         setLoading(false);
       });

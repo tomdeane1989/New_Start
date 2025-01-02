@@ -16,33 +16,38 @@ const routes = require('./config/routeConfig');
 const logger = require('./logger'); // Import Winston logger
 const errorHandler = require('./middleware/errorHandler'); // Import centralized error handler
 const requestLogger = require('./middleware/requestLogger'); // Import the requestLogger middleware
-
+const documentRoutes = require('./routes/documentRoutes');
+const path = require('path'); // For serving static files
 
 // Middleware for JSON parsing
 app.use(express.json());
 
-// **Apply the requestLogger middleware here**
+// Apply the requestLogger middleware
 app.use(requestLogger);
 
 // CORS configuration
 app.use(cors({
-    origin: 'http://localhost:3000', // Allow requests from React app
-    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed HTTP methods
-    allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
-    credentials: true, // Allow credentials (if needed)
+    origin: 'http://localhost:3000', // Allow requests from your React app
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
 }));
-
 app.options('*', cors());
 
 // Log loaded routes using Winston
 logger.info(`Loaded Routes: ${JSON.stringify(routes)}`);
 
+// Ensure we serve /uploads from this backend on port 5001
+// So requests to http://localhost:5001/uploads/<filename> retrieve the file
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Route definitions
-app.use(routes.user, userRoutes); // User routes without authentication
-app.use(routes.project, authMiddleware, projectRoutes); // Protect project routes
-app.use(routes.task, authMiddleware, taskRoutes); // Protect task routes
-app.use(routes.company, authMiddleware, companyRoutes); // Protect company routes
-app.use('/api/auth', authRoutes); // Authentication routes without requiring authentication
+app.use(routes.user, userRoutes);
+app.use(routes.project, authMiddleware, projectRoutes);
+app.use(routes.task, authMiddleware, taskRoutes);
+app.use(routes.company, authMiddleware, companyRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/documents', documentRoutes);
 
 // Example protected route
 app.get('/api/protected', authMiddleware, (req, res) => {
@@ -64,9 +69,7 @@ app.listen(PORT, () => logger.info(`Server running on port ${PORT}`));
 
 /*
 Notes:
-1. CORS is correctly configured to allow requests from the React frontend.
-2. Authentication middleware protects project, task, and company routes.
-3. Centralized error handling middleware is implemented for consistent error responses.
-4. Database synchronization uses `alter: true`, which modifies the database to match models. For production, consider using migrations.
-5. All routes are correctly loaded and logged using Winston.
+1. CORS is set to allow requests from localhost:3000.
+2. /uploads is now served at http://localhost:5001/uploads/<filename>.
+3. Make sure your Document records have file_url = "http://localhost:5001/uploads/..."
 */

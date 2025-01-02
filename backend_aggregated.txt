@@ -1,10 +1,165 @@
 
 
+--- Backend/controllers/documentController.js ---
+
+// Backend/controllers/documentController.js
+
+const { Document, TaskDocument, User } = require('../models');
+const logger = require('../logger');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Upload a new document (file + optional tags).
+ * The file is handled by Multer (see documentRoutes.js).
+ */
+exports.uploadDocument = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // This is the hashed/extended filename we produced in the Multer storage function
+    const fileNameOnDisk = req.file.filename;  
+    // The user’s original name, e.g. "mydoc.pdf"
+    const originalName = req.file.originalname; 
+
+    // Build a full URL, so the front-end knows where to fetch/preview
+    // e.g. "http://localhost:5001/uploads/abc123.pdf"
+    const fileUrl = `http://localhost:5001/uploads/${fileNameOnDisk}`;
+
+    // Convert tags to an array if user sends one vs. multiple
+    const tags = req.body.tags
+      ? Array.isArray(req.body.tags) ? req.body.tags : [req.body.tags]
+      : [];
+
+    // Optionally fetch the user’s name for "uploaded_by"
+    const user = await User.findByPk(userId);
+    const userFullName = user
+      ? `${user.first_name || ''} ${user.last_name || ''}`.trim() || `User#${user.user_id}`
+      : `User#${userId}`;
+
+    // Create the Document record in DB
+    const doc = await Document.create({
+      owner_id: userId,
+      file_name: fileNameOnDisk,      // e.g. "abc123.pdf"
+      original_filename: originalName, // The user’s real filename
+      file_url: fileUrl, 
+      tags,
+      uploaded_by: userFullName,
+      uploaded_date: new Date(),
+    });
+
+    res.status(201).json(doc);
+  } catch (error) {
+    logger.error(`Error uploading document: ${error.message}`, error);
+    res.status(500).json({ error: 'Error uploading document' });
+  }
+};
+
+/**
+ * List all documents belonging to the current user.
+ */
+exports.getAllDocuments = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const docs = await Document.findAll({
+      where: { owner_id: userId },
+      order: [['created_at', 'DESC']],
+    });
+    res.status(200).json(docs);
+  } catch (error) {
+    logger.error(`Error fetching documents: ${error.message}`, error);
+    res.status(500).json({ error: 'Failed to fetch documents' });
+  }
+};
+
+/**
+ * Update a document's metadata (tags, original_filename, etc.).
+ * We do NOT re-upload the file in this route.
+ */
+exports.updateDocument = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { document_id } = req.params;
+    logger.info(`User ${userId} updating doc_id=${document_id} with data: ${JSON.stringify(req.body)}`);
+
+    // Attempt to find the doc
+    const doc = await Document.findOne({
+      where: { document_id, owner_id: userId },
+    });
+    if (!doc) {
+      logger.warn(`Doc not found or not owned by user: doc_id=${document_id}, user_id=${userId}`);
+      return res.status(404).json({ error: 'Document not found or not yours' });
+    }
+
+    // Extract fields user can update
+    const { tags, original_filename } = req.body;
+
+    if (tags !== undefined) {
+      let tagsArray = tags;
+      if (!Array.isArray(tags)) {
+        tagsArray = [tags];
+      }
+      doc.tags = tagsArray;
+    }
+
+    if (original_filename !== undefined) {
+      doc.original_filename = original_filename.trim();
+    }
+
+    await doc.save();
+    logger.info(`Document updated successfully: doc_id=${document_id}`);
+    res.status(200).json(doc);
+  } catch (error) {
+    logger.error(`Error updating document: ${error.message}`, error);
+    res.status(500).json({ error: 'Error updating document' });
+  }
+};
+
+/**
+ * Delete a document. Also removes references from TaskDocument.
+ */
+exports.deleteDocument = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { document_id } = req.params;
+    logger.info(`User ${userId} deleting doc_id=${document_id}`);
+
+    // Check if doc belongs to the user
+    const doc = await Document.findOne({
+      where: { document_id, owner_id: userId },
+    });
+    if (!doc) {
+      logger.warn(`Doc not found or not owned by user: doc_id=${document_id}, user_id=${userId}`);
+      return res.status(404).json({ error: 'Document not found or not yours' });
+    }
+
+    // Optionally remove the file from disk
+    // if your "file_name" is e.g. "abc123.pdf"
+    // const filePath = path.join(__dirname, '..', 'uploads', doc.file_name);
+    // if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    // Remove references in TaskDocument, if any
+    await TaskDocument.destroy({ where: { document_id: doc.document_id } });
+
+    // Finally remove the doc record
+    await doc.destroy();
+    logger.info(`Document doc_id=${document_id} deleted successfully by user ${userId}`);
+    res.status(200).json({ message: 'Document deleted successfully' });
+  } catch (error) {
+    logger.error(`Error deleting document: ${error.message}`, error);
+    res.status(500).json({ error: 'Error deleting document' });
+  }
+};
+
 --- Backend/controllers/projectController.js ---
 
 // Backend/controllers/projectController.js
 const db = require('../models');
-const { Project, Stage, User, ProjectCollaborator, Task } = db;
+const { Project, Stage, User, ProjectCollaborator, Task, TaskAssignment } = db;
 const logger = require('../logger'); // Import Winston logger
 
 // Define default stages
@@ -61,13 +216,13 @@ const defaultTasks = {
         'Agree on Chattels',
         'Agree completion date',
     ],
-    'Misc': [], // No predefined tasks for Misc stage
+    'Misc': [],
 };
 
 // Middleware to verify project ownership
 async function isProjectOwner(req, res, next) {
     try {
-        const project_id = req.params.project_id || req.params.id;
+        const project_id = parseInt(req.params.project_id || req.params.id, 10);
         const userId = req.user?.id;
 
         logger.info(`Verifying ownership for project: ${project_id} by user: ${userId}`);
@@ -108,12 +263,10 @@ async function createProject(req, res) {
         }
 
         if (user_role === undefined || (user_role !== 0 && user_role !== 1)) {
-            // Ensure user_role is either 0 (Buyer) or 1 (Seller)
             logger.warn(`Invalid user_role: ${user_role}`);
             return res.status(400).json({ error: "Invalid user_role. Must be 0 (Buyer) or 1 (Seller)." });
         }
 
-        // Create the project
         const project = await Project.create({
             project_name,
             description,
@@ -125,16 +278,14 @@ async function createProject(req, res) {
 
         logger.info(`Project created successfully: ${project.project_id} by user_id: ${owner_id}`);
 
-        // Assign the owner as a collaborator
         await ProjectCollaborator.create({
             project_id: project.project_id,
             user_id: owner_id,
-            role: user_role, // 0 for Buyer, 1 for Seller
+            role: user_role,
         });
 
         logger.info(`Owner assigned as collaborator with role: ${user_role}`);
 
-        // Create default stages
         const stagesToAdd = defaultStages.map(stage => ({
             ...stage,
             project_id: project.project_id,
@@ -145,26 +296,31 @@ async function createProject(req, res) {
         const stages = await Stage.bulkCreate(stagesToAdd, { returning: true });
         logger.info(`Default stages created for project_id: ${project.project_id}`);
 
-        // Create default tasks for each stage and assign owner_id to the project creator
+
+        const thirtyDaysLater = new Date();
+        thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
+
         const tasks = stages.flatMap(stage => {
-            const stageTasks = defaultTasks[stage.stage_name]; // Fetch tasks for this stage
+            const stageTasks = defaultTasks[stage.stage_name];
             if (!stageTasks) {
                 logger.warn(`No tasks defined for stage: ${stage.stage_name}`);
-                return []; // Skip stages without tasks
+                return [];
             }
 
             return stageTasks.map(taskName => ({
                 task_name: taskName,
                 stage_id: stage.stage_id,
                 project_id: project.project_id,
-                owner_id: owner_id, // Assign project creator as the owner of these tasks
+                owner_id: owner_id,
                 created_at: new Date(),
                 updated_at: new Date(),
+                due_date: thirtyDaysLater,    // Set default due date 30 days later
+                priority: 'Medium',           // Set default priority to Medium
             }));
         });
 
         if (tasks.length > 0) {
-            await Task.bulkCreate(tasks); // Insert tasks in bulk
+            await Task.bulkCreate(tasks);
             logger.info(`Default tasks created for project_id: ${project.project_id}`);
         }
 
@@ -179,6 +335,8 @@ async function createProject(req, res) {
 }
 
 // Get projects by authenticated user
+// Backend/controllers/projectController.js
+
 async function getProjectsByUserId(req, res) {
     logger.info(`Fetching projects for user: ${req.user.id}`);
 
@@ -189,31 +347,41 @@ async function getProjectsByUserId(req, res) {
             return res.status(400).json({ error: 'Invalid user ID' });
         }
 
-        // Fetch projects owned by the user
+        // Fetch projects owned by the user with detailed collaborator info
         const ownedProjects = await Project.findAll({
             where: { owner_id: userId },
             include: [
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['user_id', 'role'],
+                    attributes: ['collaborator_id', 'user_id', 'role'],
                     include: [
                         {
                             model: User,
                             as: 'user',
-                            attributes: ['email', 'first_name', 'last_name'],
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
                         },
                     ],
                 },
                 {
                     model: Stage,
                     as: 'stages',
-                    attributes: ['stage_name', 'stage_order', 'is_custom'],
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
                     include: [
                         {
                             model: Task,
-                            as: 'tasks', // Include tasks within stages
-                            attributes: ['task_name', 'created_at', 'updated_at'],
+                            as: 'tasks',
+                            attributes: [
+                                'task_id',
+                                'created_at',
+                                'updated_at',
+                                'task_name',
+                                'description',
+                                'due_date',
+                                'priority',
+                                'is_completed',
+                                'owner_id',
+                            ],
                         },
                     ],
                 },
@@ -222,7 +390,7 @@ async function getProjectsByUserId(req, res) {
 
         logger.info(`Owned projects retrieved: ${ownedProjects.length}`);
 
-        // Fetch projects where the user is a collaborator
+        // Fetch projects where the user is a collaborator with detailed user info
         const collaboratorProjects = await Project.findAll({
             include: [
                 {
@@ -230,20 +398,37 @@ async function getProjectsByUserId(req, res) {
                     as: 'collaborators',
                     where: { user_id: userId },
                     required: true,
-                    attributes: ['project_id'],
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                        },
+                    ],
                 },
             ],
+            // Exclude projects already fetched as owned projects to prevent duplication
+            where: {
+                owner_id: { [db.Sequelize.Op.ne]: userId }, // Assuming 'db' is imported and Sequelize is accessible
+            },
+            includeIgnoreAttributes: false, // Ensure all includes are processed
         });
 
         logger.info(`Collaborator projects retrieved: ${collaboratorProjects.length}`);
 
-        // Combine and deduplicate projects
+        // Combine owned and collaborator projects
         const allProjects = [...ownedProjects, ...collaboratorProjects];
-        const uniqueProjects = Array.from(
-            new Map(allProjects.map((project) => [project.project_id, project])).values()
-        );
+
+        // Remove duplicate projects based on project_id
+        const uniqueProjectsMap = new Map();
+        allProjects.forEach((project) => {
+            uniqueProjectsMap.set(project.project_id, project);
+        });
+        const uniqueProjects = Array.from(uniqueProjectsMap.values());
 
         logger.info(`Unique projects retrieved: ${uniqueProjects.length}`);
+
         res.status(200).json(uniqueProjects);
     } catch (error) {
         logger.error(`Error in getProjectsByUserId: ${error.message}`, error);
@@ -266,7 +451,7 @@ async function getAllProjects(req, res) {
                 {
                     model: Stage,
                     as: 'stages',
-                    attributes: ['stage_name', 'stage_order', 'is_custom'],
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
                     required: false,
                 },
             ],
@@ -279,42 +464,54 @@ async function getAllProjects(req, res) {
     }
 }
 
+// Get project by ID
 async function getProjectById(req, res) {
     try {
-        const projectId = parseInt(req.params.id, 10); // Validate project ID
+        const projectId = parseInt(req.params.id, 10);
         if (isNaN(projectId)) {
             logger.warn(`Invalid project ID: ${req.params.id}`);
             return res.status(400).json({ error: "Invalid project ID" });
         }
 
-        const userId = parseInt(req.user.id, 10); // Validate user ID
+        const userId = parseInt(req.user.id, 10);
         if (isNaN(userId)) {
             logger.warn(`Invalid user ID: ${req.user.id}`);
             return res.status(400).json({ error: "Invalid user ID" });
         }
 
-        // Fetch project by ID, ensuring the authenticated user is either the owner or a collaborator
+        // Fetch the project and include collaborators to check access
         const project = await Project.findOne({
             where: { project_id: projectId },
             include: [
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['user_id', 'role'],
-                    where: {
-                        user_id: userId,
-                    },
-                    required: false, // Include collaborators only if they exist
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                    }],
                 },
                 {
                     model: Stage,
                     as: 'stages',
-                    attributes: ['stage_name', 'stage_order', 'is_custom'],
+                    attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
                     include: [
                         {
-                            model: db.Task, // Ensure the Task model is included
+                            model: Task,
                             as: 'tasks',
-                            attributes: ['task_name', 'is_completed'],
+                            attributes: ['task_id', 'task_name', 'description', 'due_date', 'priority', 'is_completed', 'owner_id'],
+                            include: [
+                                {
+                                    model: User,
+                                    as: 'assigned_users',
+                                    attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                                    through: {
+                                        attributes: ['can_view', 'can_edit'],
+                                    },
+                                },
+                            ],
                         },
                     ],
                 },
@@ -322,11 +519,21 @@ async function getProjectById(req, res) {
         });
 
         if (!project) {
-            logger.warn(`Project not found or unauthorized access for project ID: ${projectId}`);
-            return res.status(404).json({ error: "Project not found or unauthorized" });
+            logger.warn(`Project not found for ID: ${projectId}`);
+            return res.status(404).json({ error: "Project not found" });
         }
 
-        logger.info(`Project retrieved successfully: ${projectId}`);
+        // Check if the requesting user is the owner or a collaborator
+        const isOwner = project.owner_id === userId;
+        const isCollaborator = project.collaborators.some(collab => collab.user_id === userId);
+
+        if (!isOwner && !isCollaborator) {
+            logger.warn(`User ${userId} is not authorized to access project ${projectId}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        // Optionally, you can remove sensitive information or structure the response as needed
+        logger.info(`Project retrieved successfully: ${projectId} by user ${userId}`);
         res.status(200).json(project);
     } catch (error) {
         logger.error(`Error in getProjectById: ${error.message}`, error);
@@ -334,12 +541,12 @@ async function getProjectById(req, res) {
     }
 }
 
-// Update a project by its ID
+// Update project
 async function updateProject(req, res) {
     try {
-        const { id } = req.params; // Get project ID from params
-        const { project_name, description, start_date, end_date, status } = req.body; // Get project details from the body
-        const ownerId = req.user?.id; // Get the authenticated user's ID
+        const { id } = req.params;
+        const { project_name, description, start_date, end_date, status } = req.body;
+        const ownerId = req.user?.id;
 
         if (!ownerId) {
             logger.warn("Unauthorized: Owner ID is required");
@@ -348,7 +555,6 @@ async function updateProject(req, res) {
 
         logger.info(`Updating project with ID: ${id} for user ID: ${ownerId}`);
 
-        // Ensure the authenticated user is the owner of the project
         const project = await Project.findOne({
             where: { project_id: id, owner_id: ownerId },
         });
@@ -358,7 +564,6 @@ async function updateProject(req, res) {
             return res.status(404).json({ error: "Project not found or unauthorized access" });
         }
 
-        // Update the project details
         const updatedProject = await project.update({
             project_name,
             description,
@@ -375,6 +580,7 @@ async function updateProject(req, res) {
     }
 }
 
+// Add Collaborator
 async function addCollaborator(req, res) {
     try {
         logger.info(`Request Params: ${JSON.stringify(req.params)}`);
@@ -427,13 +633,17 @@ async function addCollaborator(req, res) {
     }
 }
 
-// Get all collaborators for a project
+// Get Collaborators
 async function getCollaborators(req, res) {
     try {
-        const { id } = req.params; // Ensure we use `id`, not `project_id`.
+        const { id } = req.params; // 'id' is the project_id
         const collaborators = await ProjectCollaborator.findAll({
             where: { project_id: id },
-            include: [{ model: User, as: 'user', attributes: ['email', 'first_name', 'last_name'] }]
+            include: [{
+                model: User,
+                as: 'user',
+                attributes: ['user_id', 'first_name', 'last_name', 'email'],
+            }],
         });
         logger.info(`Collaborators retrieved for project ID ${id}: ${collaborators.length}`);
         res.status(200).json(collaborators);
@@ -443,7 +653,7 @@ async function getCollaborators(req, res) {
     }
 }
 
-// Get all stages for a project
+// Get Stages
 async function getStages(req, res) {
     try {
         const { project_id } = req.params;
@@ -456,13 +666,12 @@ async function getStages(req, res) {
     }
 }
 
-// Get a specific stage by ID
+// Get Stage By ID
 async function getStageById(req, res) {
     try {
         const { project_id, stage_id } = req.params;
         logger.info(`Fetching stage with project_id: ${project_id} and stage_id: ${stage_id}`);
 
-        // Ensure `project_id` and `stage_id` are integers for query matching
         const stage = await Stage.findOne({
             where: {
                 project_id: parseInt(project_id, 10),
@@ -483,7 +692,7 @@ async function getStageById(req, res) {
     }
 }
 
-// Create a custom stage
+// Create Stage
 async function createStage(req, res) {
     try {
         const { project_id } = req.params;
@@ -505,7 +714,7 @@ async function createStage(req, res) {
     }
 }
 
-// Update an existing stage
+// Update Stage
 async function updateStage(req, res) {
     try {
         const { project_id, stage_id } = req.params;
@@ -531,7 +740,7 @@ async function updateStage(req, res) {
     }
 }
 
-// Delete an existing custom stage
+// Delete Stage
 async function deleteStage(req, res) {
     try {
         const { project_id, stage_id } = req.params;
@@ -555,6 +764,7 @@ async function deleteStage(req, res) {
     }
 }
 
+// Update Collaborator
 async function updateCollaborator(req, res) {
     try {
         const { id: project_id, collaborator_id } = req.params;
@@ -593,21 +803,62 @@ async function updateCollaborator(req, res) {
     }
 }
 
-// Delete a collaborator from a project
+// Delete Collaborator
 async function deleteCollaborator(req, res) {
     try {
-        const { project_id, collaborator_id } = req.params;
+        const { id, collaborator_id } = req.params; // 'id' is project_id
+        const project_id = parseInt(id, 10);
+        const collaborator_id_int = parseInt(collaborator_id, 10);
 
         logger.info(`Deleting collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}`);
 
-        const deleted = await ProjectCollaborator.destroy({
-            where: { project_id, collaborator_id }
-        });
-        if (!deleted) {
-            logger.warn(`Collaborator not found or unauthorized: project_id=${project_id}, collaborator_id=${collaborator_id}`);
-            return res.status(404).json({ error: 'Collaborator not found or unauthorized' });
+        if (isNaN(project_id) || isNaN(collaborator_id_int)) {
+            logger.warn('Invalid project_id or collaborator_id provided.');
+            return res.status(400).json({ error: 'Invalid project ID or collaborator ID.' });
         }
-        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id} from project_id=${project_id}`);
+
+        // Find the collaborator entry
+        const collaborator = await ProjectCollaborator.findOne({
+            where: {
+                project_id,
+                collaborator_id: collaborator_id_int,
+            },
+        });
+
+        if (!collaborator) {
+            logger.warn(`Collaborator with ID ${collaborator_id_int} not found in project ${project_id}.`);
+            return res.status(404).json({ error: 'Collaborator not found for this project.' });
+        }
+
+        // Check for ongoing task assignments
+        const ongoingTasks = await Task.findAll({
+            where: {
+                project_id,
+                is_completed: false,
+            },
+            include: [
+                {
+                    model: TaskAssignment,
+                    as: 'taskAssignments', // Ensure this matches your Task model association
+                    where: {
+                        user_id: collaborator.user_id,
+                    },
+                    required: true,
+                },
+            ],
+        });
+
+        if (ongoingTasks.length > 0) {
+            logger.warn(`Collaborator ID ${collaborator.user_id} has ongoing tasks in project ${project_id}.`);
+            return res.status(400).json({
+                error: 'Cannot remove collaborator with ongoing task assignments.',
+            });
+        }
+
+        // Proceed to delete the collaborator
+        await collaborator.destroy();
+
+        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id_int} from project_id=${project_id}`);
         res.json({ message: 'Collaborator removed successfully' });
     } catch (error) {
         logger.error(`Error in deleteCollaborator: ${error.message}`, error);
@@ -615,7 +866,7 @@ async function deleteCollaborator(req, res) {
     }
 }
 
-// Delete project by project ID
+// Delete Project
 async function deleteProject(req, res) {
     try {
         const { id } = req.params;
@@ -634,7 +885,7 @@ async function deleteProject(req, res) {
     }
 }
 
-// testing start
+// Testing start
 const testProjectCollaboratorsAssociation = async (req, res) => {
     try {
         const collaborators = await ProjectCollaborator.findAll({
@@ -653,7 +904,7 @@ const testProjectCollaboratorsAssociation = async (req, res) => {
         res.status(500).json({ error: "Error testing ProjectCollaborators association" });
     }
 };
-// testing stop
+// Testing stop
 
 module.exports = {
     createProject,
@@ -661,11 +912,11 @@ module.exports = {
     getProjectsByUserId,
     getCollaborators,
     addCollaborator,
-    getStages,          // Exported
-    getStageById,       // Exported
-    createStage,        // Exported
-    updateStage,        // Exported
-    deleteStage,        // Exported
+    getStages,
+    getStageById,
+    createStage,
+    updateStage,
+    deleteStage,
     getProjectById,
     updateProject,
     updateCollaborator,
@@ -864,28 +1115,36 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key'; // Use environme
 // Backend/controllers/userController.js
 
 // Controller function to create a user
+// Backend/controllers/userController.js
+
 const createUser = async (req, res) => {
     try {
-        const { username, email, password } = req.body;
+        const { username, email, password, first_name, last_name } = req.body;
 
-        if (!username || !email || !password) {
-            logger.warn('Missing required fields: username, email, or password');
-            return res.status(400).json({ error: 'Missing required fields: username, email, or password' });
+        // Log the incoming request data for debugging
+        logger.debug(`Received data for new user: ${JSON.stringify({ username, email, first_name, last_name })}`);
+
+        // Validate required fields
+        if (!username || !email || !password || !first_name || !last_name) {
+            logger.warn('Missing required fields: username, email, password, first_name, or last_name');
+            return res.status(400).json({ error: 'Missing required fields: username, email, password, first_name, or last_name' });
         }
 
         logger.info(`Creating user: ${email}`);
 
-        // Create the user without manually hashing the password
+        // Create the user with all necessary fields
         const newUser = await User.create({
             username,
             email,
             password_hash: password, // Pass plaintext password; model's hook will hash it
+            first_name,
+            last_name,
         });
 
         logger.info(`User created successfully: user_id=${newUser.user_id}`);
         res.status(201).json({ message: 'User created successfully', user: newUser });
     } catch (error) {
-        logger.error(`Error creating user: ${error.message}`);
+        logger.error(`Error creating user: ${error.message}`, error);
         res.status(500).json({ error: 'Failed to create user', details: error.message });
     }
 };
@@ -1047,277 +1306,526 @@ module.exports = {
 --- Backend/controllers/taskController.js ---
 
 // Backend/controllers/taskController.js
+
 const { Op } = require('sequelize');
-const { Task, Project, Stage, TaskAssignment, User } = require('../models');  // Ensure correct capitalization and imports
+const {
+  Task,
+  Project,
+  Stage,
+  TaskAssignment,
+  User,
+  Document,      // <-- ADDED
+  TaskDocument,  // <-- ADDED
+} = require('../models');
 const logger = require('../logger'); // Import Winston logger
+
+//
+// HELPER FUNCTIONS
+//
+
+// Helper function to set assigned users
+async function setTaskAssignments(task_id, assignedUserIds) {
+  // Remove existing assignments for this task
+  await TaskAssignment.destroy({ where: { task_id } });
+
+  if (!assignedUserIds || assignedUserIds.length === 0) return;
+
+  // Create new assignments
+  const assignments = assignedUserIds.map(user_id => ({
+    task_id,
+    user_id,
+    can_view: true,
+    can_edit: false,
+  }));
+
+  await TaskAssignment.bulkCreate(assignments);
+}
+
+// Helper function to set documents (many-to-many via TaskDocument)
+async function setTaskDocuments(task_id, documentIds) {
+  // Remove existing references for this task
+  await TaskDocument.destroy({ where: { task_id } });
+
+  if (!documentIds || documentIds.length === 0) return;
+
+  // Create new references
+  const refs = documentIds.map(docId => ({
+    task_id,
+    document_id: docId,
+  }));
+
+  await TaskDocument.bulkCreate(refs);
+}
+
+//
+// CONTROLLERS
+//
 
 // Create a new task
 async function createTask(req, res) {
-    try {
-        const { project_id, stage_id, task_name, description, due_date, priority } = req.body;
-        const userId = req.user.id;  // The creator's ID, which will be set as the task owner
+  try {
+    const {
+      project_id,
+      stage_id,
+      task_name,
+      description,
+      due_date,
+      priority,
+      assigned_users,
+      documents, // ADDED: array of document IDs from the frontend
+    } = req.body;
+    const userId = req.user.id;
 
-        logger.info(`User ${userId} is creating a task in project ${project_id}, stage ${stage_id} with data: ${JSON.stringify(req.body)}`);
+    logger.info(
+      `User ${userId} is creating a task in project ${project_id}, stage ${stage_id} with data: ${JSON.stringify(
+        req.body
+      )}`
+    );
 
-        // At this point, validation middleware has already checked for required fields and their formats
-
-        // Verify project exists
-        const project = await Project.findByPk(project_id);
-        if (!project) {
-            logger.warn(`Project not found: project_id=${project_id}`);
-            return res.status(400).json({ error: "Project not found." });
-        }
-
-        // Verify stage exists and belongs to the project
-        const stage = await Stage.findOne({ where: { stage_id, project_id } });
-        if (!stage) {
-            logger.warn(`Stage not found or does not belong to project: stage_id=${stage_id}, project_id=${project_id}`);
-            return res.status(400).json({ error: "Stage not found for the given project." });
-        }
-
-        // Create the task with the owner_id
-        const task = await Task.create({
-            project_id,
-            stage_id,
-            task_name,
-            description,
-            due_date,
-            priority,
-            owner_id: userId,
-        });
-
-        logger.info(`Task created successfully: ${task.task_id} by user_id: ${userId}`);
-        res.status(201).json({ message: 'Task created successfully', task });
-    } catch (error) {
-        logger.error(`Error in createTask: ${error.message}`, error);
-        res.status(500).json({ error: 'Error creating task' });
+    const project = await Project.findByPk(project_id);
+    if (!project) {
+      logger.warn(`Project not found: project_id=${project_id}`);
+      return res.status(400).json({ error: 'Project not found.' });
     }
+
+    const stage = await Stage.findOne({ where: { stage_id, project_id } });
+    if (!stage) {
+      logger.warn(
+        `Stage not found or does not belong to project: stage_id=${stage_id}, project_id=${project_id}`
+      );
+      return res
+        .status(400)
+        .json({ error: 'Stage not found for the given project.' });
+    }
+
+    const finalDueDate = due_date && due_date.trim() !== '' ? due_date : null;
+
+    // Create the core task
+    const task = await Task.create({
+      project_id,
+      stage_id,
+      task_name,
+      description,
+      due_date: finalDueDate,
+      priority,
+      owner_id: userId,
+    });
+
+    logger.info(`Task created successfully: ${task.task_id} by user_id: ${userId}`);
+
+    // Assign users if any
+    if (Array.isArray(assigned_users)) {
+      await setTaskAssignments(task.task_id, assigned_users);
+    }
+
+    // Link documents if provided
+    if (Array.isArray(documents)) {
+      await setTaskDocuments(task.task_id, documents);
+    }
+
+    // Refetch the task including assigned_users and documents
+    const updatedTask = await Task.findByPk(task.task_id, {
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_view', 'can_edit'] },
+        },
+        {
+          model: Document,
+          as: 'documents',
+          attributes: ['document_id', 'file_name', 'file_url', 'tags'],
+          through: { attributes: [] }, // no extra join table attributes
+        },
+      ],
+    });
+
+    res.status(201).json({ message: 'Task created successfully', task: updatedTask });
+  } catch (error) {
+    logger.error(`Error in createTask: ${error.message}`, error);
+    res.status(500).json({ error: 'Error creating task' });
+  }
 }
 
 // Retrieve a specific task
 async function getTaskById(req, res) {
-    try {
-        const { task_id } = req.params;
-        const userId = req.user.id;
+  try {
+    const { task_id } = req.params;
+    const userId = req.user.id;
 
-        logger.info(`User ${userId} is fetching task with ID: ${task_id}`);
+    logger.info(`User ${userId} is fetching task with ID: ${task_id}`);
 
-        // Validate task_id
-        const parsedTaskId = parseInt(task_id, 10);
-        if (isNaN(parsedTaskId)) {
-            logger.warn(`Invalid task_id: ${task_id}`);
-            return res.status(400).json({ error: "Invalid task_id. Must be an integer." });
-        }
-
-        const task = await Task.findByPk(parsedTaskId, {
-            include: [
-                {
-                    model: User,
-                    as: 'assigned_users',
-                    attributes: ['user_id'],
-                    through: { attributes: ['can_view', 'can_edit'] }
-                }
-            ]
-        });
-
-        if (!task) {
-            logger.warn(`Task not found: ${parsedTaskId}`);
-            return res.status(404).json({ error: 'Task not found' });
-        }
-
-        // Check permissions
-        const hasFullAccess = (task.owner_id === userId) ||
-            (task.assigned_users && task.assigned_users.some(u => u.user_id === userId));
-
-        const responseData = hasFullAccess ? task : { task_name: task.task_name, is_completed: task.is_completed };
-
-        logger.info(`Task retrieved successfully: ${parsedTaskId} for user ${userId}`);
-        res.status(200).json(responseData);
-    } catch (error) {
-        logger.error(`Error in getTaskById: ${error.message}`, error);
-        res.status(500).json({ error: 'Error retrieving task' });
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id: ${task_id}`);
+      return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
     }
+
+    const task = await Task.findByPk(parsedTaskId, {
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id', 'first_name', 'last_name', 'email'],
+          through: {
+            attributes: ['can_view', 'can_edit'],
+          },
+        },
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['user_id', 'first_name', 'last_name', 'email'],
+        },
+        {
+          model: Stage,
+          as: 'stage',
+          attributes: ['stage_id', 'stage_name'],
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['project_id', 'project_name'],
+        },
+        // ADD documents if you want them in the single-task fetch
+        {
+          model: Document,
+          as: 'documents',
+          attributes: ['document_id', 'file_name', 'file_url', 'tags'],
+          through: { attributes: [] },
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(`Task not found: ${parsedTaskId}`);
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    const hasFullAccess =
+      task.owner_id === userId ||
+      (task.assigned_users && task.assigned_users.some(u => u.user_id === userId));
+
+    // If user isn't the owner/assignee, restrict data
+    const responseData = hasFullAccess
+      ? task
+      : { task_name: task.task_name, is_completed: task.is_completed };
+
+    logger.info(`Task retrieved successfully: ${parsedTaskId} for user ${userId}`);
+    res.status(200).json(responseData);
+  } catch (error) {
+    logger.error(`Error in getTaskById: ${error.message}`, error);
+    res.status(500).json({ error: 'Error retrieving task' });
+  }
 }
 
 // GET all tasks for which you are assigned or owner
 async function getTasksByUser(req, res) {
-    try {
-        const userId = req.user.id;
-        logger.info(`Fetching all tasks for user: ${userId}`);
+  try {
+    const userId = req.user.id;
+    logger.info(`Fetching all tasks for user: ${userId}`);
 
-        const tasks = await Task.findAll({
-            where: {
-                [Op.or]: [
-                    { owner_id: userId },  // Tasks owned by the user
-                    {
-                        '$assigned_users.user_id$': userId  // Tasks where the user is a collaborator
-                    }
-                ]
-            },
-            include: [
-                {
-                    model: User,
-                    as: 'assigned_users',
-                    attributes: ['user_id'],
-                    through: {
-                        attributes: ['can_view', 'can_edit'],
-                    }
-                }
-            ]
-        });
+    const tasks = await Task.findAll({
+      where: {
+        [Op.or]: [{ owner_id: userId }, { '$assigned_users.user_id$': userId }],
+      },
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: {
+            attributes: ['can_view', 'can_edit'],
+          },
+        },
+        {
+          model: Stage,
+          as: 'stage',
+          attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['project_id', 'project_name'],
+        },
+      ],
+    });
 
-        logger.info(`Tasks retrieved for user ${userId}: ${tasks.length}`);
-        res.status(200).json(tasks);
-    } catch (error) {
-        logger.error(`Error in getTasksByUser: ${error.message}`, error);
-        res.status(500).json({ error: 'Error fetching tasks' });
-    }
+    logger.info(`Tasks retrieved for user ${userId}: ${tasks.length}`);
+    res.status(200).json(tasks);
+  } catch (error) {
+    logger.error(`Error in getTasksByUser: ${error.message}`, error);
+    res.status(500).json({ error: 'Error fetching tasks' });
+  }
 }
 
 // Update task
 async function updateTask(req, res) {
-    try {
-        const { task_id } = req.params;
-        const userId = req.user.id;
-        const { project_id, stage_id, task_name, description, due_date, priority, is_completed } = req.body;
+  try {
+    const { task_id } = req.params;
+    const userId = req.user.id;
+    const {
+      project_id,
+      stage_id,
+      task_name,
+      description,
+      due_date,
+      priority,
+      is_completed,
+      assigned_users,
+      documents, // ADDED: array of doc IDs
+    } = req.body;
 
-        // Validate task_id
-        const parsedTaskId = parseInt(task_id, 10);
-        if (isNaN(parsedTaskId)) {
-            logger.warn(`Invalid task_id provided: ${task_id}`);
-            return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
-        }
-
-        logger.info(`User ${userId} is attempting to update task_id: ${parsedTaskId} with data: ${JSON.stringify(req.body)}`);
-
-        // Find the task and check permissions
-        const task = await Task.findOne({
-            where: {
-                task_id: parsedTaskId,
-                [Op.or]: [
-                    { owner_id: userId }, // Owner
-                    {
-                        '$assigned_users.TaskAssignment.can_edit$': true,
-                        '$assigned_users.user_id$': userId // Collaborator with edit permissions
-                    }
-                ]
-            },
-            include: [
-                {
-                    model: User,
-                    as: 'assigned_users',
-                    attributes: ['user_id'],
-                    through: {
-                        attributes: ['can_edit']
-                    }
-                }
-            ]
-        });
-
-        if (!task) {
-            logger.warn(`Task not found or insufficient permissions for task_id: ${parsedTaskId}`);
-            return res.status(404).json({ error: 'Task not found or insufficient permissions' });
-        }
-
-        // If project_id or stage_id is being updated, validate them
-        if (project_id || stage_id) {
-            const parsedProjectId = project_id ? parseInt(project_id, 10) : task.project_id;
-            const parsedStageId = stage_id ? parseInt(stage_id, 10) : task.stage_id;
-
-            if (isNaN(parsedProjectId) || isNaN(parsedStageId)) {
-                logger.warn(`Invalid project_id: ${project_id} or stage_id: ${stage_id}`);
-                return res.status(400).json({ error: "Invalid project_id or stage_id. Both must be integers." });
-            }
-
-            // Verify project exists
-            const project = await Project.findByPk(parsedProjectId);
-            if (!project) {
-                logger.warn(`Project not found: project_id=${parsedProjectId}`);
-                return res.status(400).json({ error: "Project not found." });
-            }
-
-            // Verify stage exists and belongs to the project
-            const stage = await Stage.findOne({ where: { stage_id: parsedStageId, project_id: parsedProjectId } });
-            if (!stage) {
-                logger.warn(`Stage not found or does not belong to project: stage_id=${parsedStageId}, project_id=${parsedProjectId}`);
-                return res.status(400).json({ error: "Stage not found for the given project." });
-            }
-
-            // Update project_id and stage_id
-            task.project_id = parsedProjectId;
-            task.stage_id = parsedStageId;
-        }
-
-        // Update other fields if provided
-        if (task_name !== undefined) task.task_name = task_name;
-        if (description !== undefined) task.description = description;
-        if (due_date !== undefined) task.due_date = due_date;
-        if (priority !== undefined) task.priority = priority;
-        if (is_completed !== undefined) task.is_completed = is_completed;
-
-        await task.save();
-
-        logger.info(`Task updated successfully: ${parsedTaskId} by user_id: ${userId}`);
-        res.status(200).json({ message: 'Task updated successfully', task });
-    } catch (error) {
-        logger.error(`Error in updateTask: ${error.message}`, error);
-        res.status(500).json({ error: 'Error updating task' });
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id provided: ${task_id}`);
+      return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
     }
+
+    logger.info(
+      `User ${userId} is attempting to update task_id: ${parsedTaskId} with data: ${JSON.stringify(
+        req.body
+      )}`
+    );
+
+    const task = await Task.findOne({
+      where: {
+        task_id: parsedTaskId,
+        [Op.or]: [
+          { owner_id: userId },
+          {
+            '$assigned_users.TaskAssignment.can_edit$': true,
+            '$assigned_users.user_id$': userId,
+          },
+        ],
+      },
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_edit'] },
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(
+        `Task not found or insufficient permissions for task_id: ${parsedTaskId}`
+      );
+      return res
+        .status(404)
+        .json({ error: 'Task not found or insufficient permissions' });
+    }
+
+    // If project_id/stage_id changed, validate them
+    if (project_id || stage_id) {
+      const parsedProjectId = project_id ? parseInt(project_id, 10) : task.project_id;
+      const parsedStageId = stage_id ? parseInt(stage_id, 10) : task.stage_id;
+
+      if (isNaN(parsedProjectId) || isNaN(parsedStageId)) {
+        logger.warn(`Invalid project_id: ${project_id} or stage_id: ${stage_id}`);
+        return res
+          .status(400)
+          .json({ error: 'Invalid project_id or stage_id. Both must be integers.' });
+      }
+
+      const project = await Project.findByPk(parsedProjectId);
+      if (!project) {
+        logger.warn(`Project not found: project_id=${parsedProjectId}`);
+        return res.status(400).json({ error: 'Project not found.' });
+      }
+
+      const stage = await Stage.findOne({
+        where: { stage_id: parsedStageId, project_id: parsedProjectId },
+      });
+      if (!stage) {
+        logger.warn(
+          `Stage not found or does not belong to project: stage_id=${parsedStageId}, project_id=${parsedProjectId}`
+        );
+        return res
+          .status(400)
+          .json({ error: 'Stage not found for the given project.' });
+      }
+
+      task.project_id = parsedProjectId;
+      task.stage_id = parsedStageId;
+    }
+
+    // Update fields
+    if (task_name !== undefined) task.task_name = task_name;
+    if (description !== undefined) task.description = description;
+    if (due_date !== undefined) task.due_date = due_date;
+    if (priority !== undefined) task.priority = priority;
+    if (is_completed !== undefined) task.is_completed = is_completed;
+
+    await task.save();
+
+    // Update assigned_users if provided
+    if (Array.isArray(assigned_users)) {
+      await setTaskAssignments(task.task_id, assigned_users);
+    }
+
+    // Update documents if provided
+    if (Array.isArray(documents)) {
+      await setTaskDocuments(task.task_id, documents);
+    }
+
+    // Refetch the updated task with assigned_users and documents
+    const updatedTask = await Task.findByPk(task.task_id, {
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_view', 'can_edit'] },
+        },
+        {
+          model: Document,
+          as: 'documents',
+          attributes: ['document_id', 'file_name', 'file_url', 'tags'],
+          through: { attributes: [] },
+        },
+      ],
+    });
+
+    logger.info(`Task updated successfully: ${parsedTaskId} by user_id: ${userId}`);
+    res.status(200).json({ message: 'Task updated successfully', task: updatedTask });
+  } catch (error) {
+    logger.error(`Error in updateTask: ${error.message}`, error);
+    res.status(500).json({ error: 'Error updating task' });
+  }
 }
 
 // Delete task
 async function deleteTask(req, res) {
-    try {
-        const { task_id } = req.params;
-        const userId = req.user.id;
+  try {
+    const { task_id } = req.params;
+    const userId = req.user.id;
 
-        // Validate task_id
-        const parsedTaskId = parseInt(task_id, 10);
-        if (isNaN(parsedTaskId)) {
-            logger.warn(`Invalid task_id provided: ${task_id}`);
-            return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
-        }
-
-        logger.info(`User ${userId} is attempting to delete task_id: ${parsedTaskId}`);
-
-        const task = await Task.findOne({
-            where: {
-                task_id: parsedTaskId,
-                [Op.or]: [
-                    { owner_id: userId }, // Owner
-                    {
-                        '$assigned_users.TaskAssignment.can_edit$': true,
-                        '$assigned_users.user_id$': userId // Collaborator with edit permissions
-                    }
-                ]
-            },
-            include: [
-                {
-                    model: User,
-                    as: 'assigned_users',
-                    attributes: ['user_id'],
-                    through: {
-                        attributes: ['can_edit']
-                    }
-                }
-            ]
-        });
-
-        if (!task) {
-            logger.warn(`Task not found or insufficient permissions for task_id: ${parsedTaskId}`);
-            return res.status(404).json({ error: 'Task not found or insufficient permissions' });
-        }
-
-        await task.destroy();
-        logger.info(`Task deleted successfully: ${parsedTaskId} by user_id: ${userId}`);
-        res.status(200).json({ message: 'Task deleted successfully' });
-    } catch (error) {
-        logger.error(`Error in deleteTask: ${error.message}`, error);
-        res.status(500).json({ error: 'Error deleting task' });
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id provided: ${task_id}`);
+      return res
+        .status(400)
+        .json({ error: 'Invalid task_id. Must be an integer.' });
     }
+
+    logger.info(`User ${userId} is attempting to delete task_id: ${parsedTaskId}`);
+
+    const task = await Task.findOne({
+      where: {
+        task_id: parsedTaskId,
+        [Op.or]: [
+          { owner_id: userId },
+          {
+            '$assigned_users.TaskAssignment.can_edit$': true,
+            '$assigned_users.user_id$': userId,
+          },
+        ],
+      },
+      include: [
+        {
+          model: User,
+          as: 'assigned_users',
+          attributes: ['user_id'],
+          through: { attributes: ['can_edit'] },
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(
+        `Task not found or insufficient permissions for task_id: ${parsedTaskId}`
+      );
+      return res
+        .status(404)
+        .json({ error: 'Task not found or insufficient permissions' });
+    }
+
+    await task.destroy();
+    logger.info(`Task deleted successfully: ${parsedTaskId} by user_id: ${userId}`);
+    res.status(200).json({ message: 'Task deleted successfully' });
+  } catch (error) {
+    logger.error(`Error in deleteTask: ${error.message}`, error);
+    res.status(500).json({ error: 'Error deleting task' });
+  }
 }
 
-module.exports = { createTask, getTaskById, updateTask, deleteTask, getTasksByUser };
+// Mark task as completed
+async function markTaskAsCompleted(req, res) {
+  try {
+    const { id: task_id } = req.params; // 'id' is the task_id
+    const userId = req.user.id;
+
+    const parsedTaskId = parseInt(task_id, 10);
+    if (isNaN(parsedTaskId)) {
+      logger.warn(`Invalid task_id: ${task_id}`);
+      return res.status(400).json({ error: 'Invalid task ID' });
+    }
+
+    logger.info(`User ${userId} is attempting to mark task ${parsedTaskId} as completed.`);
+
+    const task = await Task.findOne({
+      where: { task_id: parsedTaskId },
+      include: [
+        {
+          model: TaskAssignment,
+          as: 'taskAssignments',
+          where: { user_id: userId },
+          required: false,
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['project_id', 'project_name'],
+        },
+        {
+          model: Stage,
+          as: 'stage',
+          attributes: ['stage_id', 'stage_name'],
+        },
+      ],
+    });
+
+    if (!task) {
+      logger.warn(`Task not found: task_id=${parsedTaskId}`);
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Check if user is owner or assigned to the task
+    const isOwner = task.owner_id === userId;
+    const isAssigned = task.taskAssignments && task.taskAssignments.length > 0;
+
+    if (!isOwner && !isAssigned) {
+      logger.warn(
+        `User ${userId} is not authorized to mark task ${parsedTaskId} as completed.`
+      );
+      return res.status(403).json({
+        error: 'You do not have permission to complete this task',
+      });
+    }
+
+    // Mark as completed
+    task.is_completed = true;
+    await task.save();
+
+    logger.info(`Task ${parsedTaskId} marked as completed by user ${userId}`);
+    res.status(200).json({ message: 'Task marked as completed', task });
+  } catch (error) {
+    logger.error(`Error in markTaskAsCompleted: ${error.message}`, error);
+    res.status(500).json({ error: 'Error marking task as completed' });
+  }
+}
+
+module.exports = {
+  createTask,
+  getTaskById,
+  getTasksByUser,
+  updateTask,
+  deleteTask,
+  markTaskAsCompleted,
+};
 
 --- Backend/controllers/authController.js ---
 
@@ -1453,6 +1961,75 @@ router.post(
 
 module.exports = router;
 
+--- Backend/routes/documentRoutes.js ---
+
+// Backend/routes/documentRoutes.js
+const express = require('express');
+const router = express.Router();
+const { 
+  uploadDocument, 
+  getAllDocuments, 
+  updateDocument, 
+  deleteDocument 
+} = require('../controllers/documentController');
+const authMiddleware = require('../middleware/authMiddleware');
+
+// Import Multer and additional modules
+const multer = require('multer');
+const path = require('path');
+const crypto = require('crypto');
+
+// Multer: custom diskStorage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    // Save to the 'uploads/' folder (relative to your server root).
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    // Derive the extension from the original file name
+    const ext = path.extname(file.originalname).toLowerCase(); 
+    // Create a random 16-byte hex string
+    const base = crypto.randomBytes(16).toString('hex'); 
+    // Combine them. e.g. "abc123... .pdf"
+    const finalFilename = base + ext; 
+    cb(null, finalFilename);
+  },
+});
+
+// Initialize the Multer middleware with our custom storage
+const upload = multer({ storage });
+
+/**
+ * All these routes are behind authMiddleware
+ */
+router.use(authMiddleware);
+
+/**
+ * POST /api/documents
+ * => upload a new document with correct extension
+ */
+router.post('/', upload.single('file'), uploadDocument);
+
+/**
+ * GET /api/documents
+ * => list the user's documents
+ */
+router.get('/', getAllDocuments);
+
+/**
+ * PUT /api/documents/:document_id
+ * => update doc's metadata (tags, original_filename, etc)
+ */
+router.put('/:document_id', updateDocument);
+
+/**
+ * DELETE /api/documents/:document_id
+ * => permanently remove the doc
+ */
+router.delete('/:document_id', deleteDocument);
+
+module.exports = router;
+
 --- Backend/routes/userRoutes.js ---
 
 const express = require('express');
@@ -1572,23 +2149,34 @@ module.exports = router;
 // Backend/routes/taskRoutes.js
 const express = require('express');
 const router = express.Router();
-const authMiddleware = require('../middleware/authMiddleware'); // Middleware for authentication
-const validateTask = require('../middleware/validateTask'); // Import validation middleware
+const authMiddleware = require('../middleware/authMiddleware');
+const validateTask = require('../middleware/validateTask');
+const taskController = require('../controllers/taskController'); // Import taskController
+
 const { 
     getTasksByUser, 
     getTaskById, 
     updateTask, 
     deleteTask, 
-    createTask 
-} = require('../controllers/taskController');
+    createTask,
+    markTaskAsCompleted 
+} = taskController;
 
+// Protect all task routes
+router.use(authMiddleware);
 
 // Define CRUD routes for tasks with validation where necessary
-router.post('/', validateTask, createTask);                 // Create a new task
-router.get('/user-tasks', getTasksByUser);                  // Get all tasks associated with a user
-router.get('/:task_id', getTaskById);                       // Get a specific task by ID
-router.put('/:task_id', validateTask, updateTask);          // Update a task by ID
-router.delete('/:task_id', deleteTask);                     // Delete a task by ID
+router.post('/', validateTask, createTask);     // Create a new task
+router.get('/user-tasks', getTasksByUser);      // Get all tasks associated with a user
+router.get('/:task_id', getTaskById);           // Get a specific task by ID
+router.put('/:task_id', validateTask, updateTask);  // Update a task by ID
+router.delete('/:task_id', deleteTask);         // Delete a task by ID
+
+// Add route to mark task as completed
+router.put('/:id/complete', markTaskAsCompleted);
+
+// Removed the incorrect 'assigned' route
+// router.get('/assigned', authMiddleware, taskController.getAssignedTasks);//Get all open tasks assigned to the authenticated user
 
 module.exports = router;
 
@@ -1732,14 +2320,12 @@ const validateTask = [
         .optional()
         .isString().withMessage('description must be a string'),
     body('due_date')
-        .optional()
+        .optional({ checkFalsy: true }) // Allows empty strings to be treated as missing
         .isISO8601().withMessage('due_date must be a valid date'),
     body('priority')
         .exists().withMessage('priority is required')
         .isIn(['Low', 'Medium', 'High']).withMessage('priority must be Low, Medium, or High'),
-    // Add more validations as needed
 
-    // Middleware to check for validation errors
     (req, res, next) => {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -1832,6 +2418,8 @@ module.exports = requestLogger;
 --- Backend/models/projectCollaborators.js ---
 
 // models/projectCollaborators.js
+// Backend/models/projectCollaborators.js
+
 const { Model, DataTypes } = require('sequelize');
 
 module.exports = (sequelize) => {
@@ -1860,7 +2448,7 @@ module.exports = (sequelize) => {
         allowNull: false,
       },
       role: { 
-        type: DataTypes.INTEGER, // Now store role as an integer
+        type: DataTypes.INTEGER, // Store role as an integer
         allowNull: false,
         defaultValue: 0 // Default to Buyer (0)
       },
@@ -1885,6 +2473,8 @@ module.exports = (sequelize) => {
 --- Backend/models/taskAssignment.js ---
 
 // models/taskassignment.js
+// Backend/models/taskAssignment.js
+
 module.exports = (sequelize, DataTypes) => {
     const TaskAssignment = sequelize.define('TaskAssignment', {
         assignment_id: {
@@ -1911,7 +2501,7 @@ module.exports = (sequelize, DataTypes) => {
     }, {
         tableName: 'taskassignments',
         timestamps: false,
-        modelName: 'TaskAssignment', // Ensure modelName is set so references to models.TaskAssignment work correctly
+        modelName: 'TaskAssignment',
     });
 
     // Define associations
@@ -1925,6 +2515,8 @@ module.exports = (sequelize, DataTypes) => {
 };
 
 --- Backend/models/user.js ---
+
+// Backend/models/user.js
 
 const { Model, DataTypes } = require('sequelize');
 const bcrypt = require('bcrypt');
@@ -2029,6 +2621,7 @@ module.exports = (sequelize) => {
 
 --- Backend/models/task.js ---
 
+// models/task.js
 const { Model, DataTypes } = require('sequelize');
 
 module.exports = (sequelize) => {
@@ -2037,24 +2630,36 @@ module.exports = (sequelize) => {
       this.belongsTo(models.Stage, {
         foreignKey: 'stage_id',
         as: 'stage',
-        onDelete: 'CASCADE', // Deletes tasks if the stage is removed
         hooks: true,
       });
       this.belongsTo(models.Project, {
         foreignKey: 'project_id',
         as: 'project',
-        onDelete: 'CASCADE', // Deletes tasks if the project is removed
         hooks: true,
       });
       this.belongsTo(models.User, {
         foreignKey: 'owner_id',
         as: 'owner',
-        onDelete: 'SET NULL', // Sets owner_id to NULL if the user is deleted
+        onDelete: 'SET NULL',
       });
       this.belongsToMany(models.User, {
         through: models.TaskAssignment,
         as: 'assigned_users',
         foreignKey: 'task_id',
+      });
+
+      // **New Association**
+      this.hasMany(models.TaskAssignment, {
+        foreignKey: 'task_id',
+        as: 'taskAssignments', // This alias should match the one used in controller
+        onDelete: 'CASCADE', // Optional: Define behavior on task deletion
+        hooks: true,
+      });
+      this.belongsToMany(models.Document, {
+        through: models.TaskDocument,
+        foreignKey: 'task_id',
+        otherKey: 'document_id',
+        as: 'documents',
       });
     }
   }
@@ -2066,6 +2671,14 @@ module.exports = (sequelize) => {
         primaryKey: true,
         autoIncrement: true,
       },
+      stage_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
+      project_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
       task_name: {
         type: DataTypes.STRING,
         allowNull: false,
@@ -2076,7 +2689,7 @@ module.exports = (sequelize) => {
       },
       owner_id: {
         type: DataTypes.INTEGER,
-        allowNull: true, // Consider changing this to allowNull: false after cleanup
+        allowNull: true, 
       },
       description: DataTypes.STRING,
       due_date: DataTypes.DATE,
@@ -2097,6 +2710,8 @@ module.exports = (sequelize) => {
 
 --- Backend/models/index.js ---
 
+// Backend/models/index.js
+
 const fs = require('fs');
 const path = require('path');
 const Sequelize = require('sequelize');
@@ -2105,37 +2720,47 @@ const env = process.env.NODE_ENV || 'development';
 const config = require('../config/config.json')[env];
 const db = {};
 
-const sequelize = new Sequelize(config.database, config.username, config.password, config);
+let sequelize;
+if (config.use_env_variable) {
+  sequelize = new Sequelize(process.env[config.use_env_variable], config);
+} else {
+  sequelize = new Sequelize(config.database, config.username, config.password, config);
+}
 
 // Load models dynamically
-fs.readdirSync(__dirname)
-    .filter((file) => {
-        return file.indexOf('.') !== 0 && file !== basename && file.slice(-3) === '.js';
-    })
-    .forEach((file) => {
-        try {
-            const model = require(path.join(__dirname, file))(sequelize, Sequelize.DataTypes);
-            db[model.name] = model;
-            console.log(`Model loaded: ${model.name}`);
-        } catch (error) {
-            console.error(`Failed to load model from file: ${file}`, error);
-        }
-    });
+fs
+  .readdirSync(__dirname)
+  .filter(file => {
+    return (
+      file.indexOf('.') !== 0 &&
+      file !== basename &&
+      file.slice(-3) === '.js'
+    );
+  })
+  .forEach(file => {
+    try {
+      const model = require(path.join(__dirname, file))(sequelize, Sequelize.DataTypes);
+      db[model.name] = model;
+      console.log(`Model loaded: ${model.name}`);
+    } catch (error) {
+      console.error(`Failed to load model from file: ${file}`, error);
+    }
+  });
 
 // Initialize associations
-Object.keys(db).forEach((modelName) => {
-    if (db[modelName].associate) {
-        try {
-            db[modelName].associate(db);
-            console.log(`Associations initialized for model: ${modelName}`);
-        } catch (error) {
-            console.error(`Failed to initialize associations for model: ${modelName}`, error);
-        }
+Object.keys(db).forEach(modelName => {
+  if (db[modelName].associate) {
+    try {
+      db[modelName].associate(db);
+      console.log(`Associations initialized for model: ${modelName}`);
+    } catch (error) {
+      console.error(`Failed to initialize associations for model: ${modelName}`, error);
     }
+  }
 });
 
 // Test model availability
-const requiredModels = ['Project', 'User', 'Company'];
+const requiredModels = ['Project', 'User', 'Company', 'Task', 'TaskAssignment'];
 requiredModels.forEach((modelName) => {
     if (!db[modelName]) {
         console.error(`Required model not found: ${modelName}. Please verify the model file.`);
@@ -2250,7 +2875,49 @@ module.exports = (sequelize) => {
   return Stage;
 };
 
+--- Backend/models/taskDocument.js ---
+
+// Backend/models/taskDocument.js
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class TaskDocument extends Model {
+    static associate(models) {
+      // This is the join table between Task and Document
+    }
+  }
+
+  TaskDocument.init(
+    {
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      task_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      document_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'TaskDocument',
+      tableName: 'taskdocuments',
+      timestamps: false,
+    }
+  );
+
+  return TaskDocument;
+};
+
 --- Backend/models/project.js ---
+
+// Backend/models/project.js
 
 const { Model, DataTypes } = require('sequelize');
 
@@ -2261,7 +2928,7 @@ module.exports = (sequelize) => {
         foreignKey: 'project_id',
         as: 'collaborators',
         onDelete: 'CASCADE',
-        hooks: true, // Ensures cascade deletion
+        hooks: true,
       });
       this.hasMany(models.Stage, {
         foreignKey: 'project_id',
@@ -2274,6 +2941,10 @@ module.exports = (sequelize) => {
         as: 'tasks',
         onDelete: 'CASCADE',
         hooks: true,
+      });
+      this.belongsTo(models.User, {
+        foreignKey: 'owner_id',
+        as: 'owner',
       });
     }
   }
@@ -2316,6 +2987,74 @@ module.exports = (sequelize) => {
   return Project;
 };
 
+--- Backend/models/document.js ---
+
+// Backend/models/document.js
+
+const { Model, DataTypes } = require('sequelize');
+
+module.exports = (sequelize) => {
+  class Document extends Model {
+    static associate(models) {
+      this.belongsToMany(models.Task, {
+        through: models.TaskDocument,
+        foreignKey: 'document_id',
+        otherKey: 'task_id',
+        as: 'tasks',
+      });
+      this.belongsTo(models.User, { foreignKey: 'owner_id', as: 'owner' });
+    }
+  }
+
+  Document.init(
+    {
+      document_id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+      owner_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      file_name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+      file_url: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      tags: {
+        type: DataTypes.ARRAY(DataTypes.STRING),
+        defaultValue: [],
+      },
+      original_filename: {
+        type: DataTypes.STRING, // e.g. user’s original "myhouse.pdf"
+        allowNull: true,
+      },
+      uploaded_by: {
+        type: DataTypes.STRING, // or integer if you want user_id
+        allowNull: true,
+      },
+      uploaded_date: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW,
+      },
+    },
+    {
+      sequelize,
+      modelName: 'Document',
+      tableName: 'documents',
+      timestamps: true,
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+    }
+  );
+
+  return Document;
+};
+
 --- Backend/server.js ---
 
 // Backend/server.js
@@ -2336,33 +3075,38 @@ const routes = require('./config/routeConfig');
 const logger = require('./logger'); // Import Winston logger
 const errorHandler = require('./middleware/errorHandler'); // Import centralized error handler
 const requestLogger = require('./middleware/requestLogger'); // Import the requestLogger middleware
-
+const documentRoutes = require('./routes/documentRoutes');
+const path = require('path'); // For serving static files
 
 // Middleware for JSON parsing
 app.use(express.json());
 
-// **Apply the requestLogger middleware here**
+// Apply the requestLogger middleware
 app.use(requestLogger);
 
 // CORS configuration
 app.use(cors({
-    origin: 'http://localhost:3000', // Allow requests from React app
-    methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allowed HTTP methods
-    allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
-    credentials: true, // Allow credentials (if needed)
+    origin: 'http://localhost:3000', // Allow requests from your React app
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
 }));
-
 app.options('*', cors());
 
 // Log loaded routes using Winston
 logger.info(`Loaded Routes: ${JSON.stringify(routes)}`);
 
+// Ensure we serve /uploads from this backend on port 5001
+// So requests to http://localhost:5001/uploads/<filename> retrieve the file
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // Route definitions
-app.use(routes.user, userRoutes); // User routes without authentication
-app.use(routes.project, authMiddleware, projectRoutes); // Protect project routes
-app.use(routes.task, authMiddleware, taskRoutes); // Protect task routes
-app.use(routes.company, authMiddleware, companyRoutes); // Protect company routes
-app.use('/api/auth', authRoutes); // Authentication routes without requiring authentication
+app.use(routes.user, userRoutes);
+app.use(routes.project, authMiddleware, projectRoutes);
+app.use(routes.task, authMiddleware, taskRoutes);
+app.use(routes.company, authMiddleware, companyRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/documents', documentRoutes);
 
 // Example protected route
 app.get('/api/protected', authMiddleware, (req, res) => {
@@ -2384,9 +3128,7 @@ app.listen(PORT, () => logger.info(`Server running on port ${PORT}`));
 
 /*
 Notes:
-1. CORS is correctly configured to allow requests from the React frontend.
-2. Authentication middleware protects project, task, and company routes.
-3. Centralized error handling middleware is implemented for consistent error responses.
-4. Database synchronization uses `alter: true`, which modifies the database to match models. For production, consider using migrations.
-5. All routes are correctly loaded and logged using Winston.
+1. CORS is set to allow requests from localhost:3000.
+2. /uploads is now served at http://localhost:5001/uploads/<filename>.
+3. Make sure your Document records have file_url = "http://localhost:5001/uploads/..."
 */

@@ -1,3 +1,5 @@
+// Backend/models/project.js
+
 const { Model, DataTypes } = require('sequelize');
 
 module.exports = (sequelize) => {
@@ -7,7 +9,7 @@ module.exports = (sequelize) => {
         foreignKey: 'project_id',
         as: 'collaborators',
         onDelete: 'CASCADE',
-        hooks: true, // Ensures cascade deletion
+        hooks: true,
       });
       this.hasMany(models.Stage, {
         foreignKey: 'project_id',
@@ -20,6 +22,10 @@ module.exports = (sequelize) => {
         as: 'tasks',
         onDelete: 'CASCADE',
         hooks: true,
+      });
+      this.belongsTo(models.User, {
+        foreignKey: 'owner_id',
+        as: 'owner',
       });
     }
   }

@@ -1,4 +1,6 @@
 // models/projectCollaborators.js
+// Backend/models/projectCollaborators.js
+
 const { Model, DataTypes } = require('sequelize');
 
 module.exports = (sequelize) => {
@@ -27,7 +29,7 @@ module.exports = (sequelize) => {
         allowNull: false,
       },
       role: { 
-        type: DataTypes.INTEGER, // Now store role as an integer
+        type: DataTypes.INTEGER, // Store role as an integer
         allowNull: false,
         defaultValue: 0 // Default to Buyer (0)
       },

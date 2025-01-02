@@ -1,6 +1,6 @@
 // Backend/controllers/projectController.js
 const db = require('../models');
-const { Project, Stage, User, ProjectCollaborator, Task } = db;
+const { Project, Stage, User, ProjectCollaborator, Task, TaskAssignment } = db;
 const logger = require('../logger'); // Import Winston logger
 
 // Define default stages
@@ -63,7 +63,7 @@ const defaultTasks = {
 // Middleware to verify project ownership
 async function isProjectOwner(req, res, next) {
     try {
-        const project_id = req.params.project_id || req.params.id;
+        const project_id = parseInt(req.params.project_id || req.params.id, 10);
         const userId = req.user?.id;
 
         logger.info(`Verifying ownership for project: ${project_id} by user: ${userId}`);
@@ -176,6 +176,8 @@ async function createProject(req, res) {
 }
 
 // Get projects by authenticated user
+// Backend/controllers/projectController.js
+
 async function getProjectsByUserId(req, res) {
     logger.info(`Fetching projects for user: ${req.user.id}`);
 
@@ -186,18 +188,19 @@ async function getProjectsByUserId(req, res) {
             return res.status(400).json({ error: 'Invalid user ID' });
         }
 
+        // Fetch projects owned by the user with detailed collaborator info
         const ownedProjects = await Project.findAll({
             where: { owner_id: userId },
             include: [
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['user_id', 'role'],
+                    attributes: ['collaborator_id', 'user_id', 'role'],
                     include: [
                         {
                             model: User,
                             as: 'user',
-                            attributes: ['email', 'first_name', 'last_name'],
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
                         },
                     ],
                 },
@@ -209,7 +212,17 @@ async function getProjectsByUserId(req, res) {
                         {
                             model: Task,
                             as: 'tasks',
-                            attributes: ['task_id', 'created_at', 'updated_at', 'task_name', 'description', 'due_date', 'priority', 'is_completed', 'owner_id'],
+                            attributes: [
+                                'task_id',
+                                'created_at',
+                                'updated_at',
+                                'task_name',
+                                'description',
+                                'due_date',
+                                'priority',
+                                'is_completed',
+                                'owner_id',
+                            ],
                         },
                     ],
                 },
@@ -218,6 +231,7 @@ async function getProjectsByUserId(req, res) {
 
         logger.info(`Owned projects retrieved: ${ownedProjects.length}`);
 
+        // Fetch projects where the user is a collaborator with detailed user info
         const collaboratorProjects = await Project.findAll({
             include: [
                 {
@@ -225,19 +239,37 @@ async function getProjectsByUserId(req, res) {
                     as: 'collaborators',
                     where: { user_id: userId },
                     required: true,
-                    attributes: ['project_id'],
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [
+                        {
+                            model: User,
+                            as: 'user',
+                            attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                        },
+                    ],
                 },
             ],
+            // Exclude projects already fetched as owned projects to prevent duplication
+            where: {
+                owner_id: { [db.Sequelize.Op.ne]: userId }, // Assuming 'db' is imported and Sequelize is accessible
+            },
+            includeIgnoreAttributes: false, // Ensure all includes are processed
         });
 
         logger.info(`Collaborator projects retrieved: ${collaboratorProjects.length}`);
 
+        // Combine owned and collaborator projects
         const allProjects = [...ownedProjects, ...collaboratorProjects];
-        const uniqueProjects = Array.from(
-            new Map(allProjects.map((project) => [project.project_id, project])).values()
-        );
+
+        // Remove duplicate projects based on project_id
+        const uniqueProjectsMap = new Map();
+        allProjects.forEach((project) => {
+            uniqueProjectsMap.set(project.project_id, project);
+        });
+        const uniqueProjects = Array.from(uniqueProjectsMap.values());
 
         logger.info(`Unique projects retrieved: ${uniqueProjects.length}`);
+
         res.status(200).json(uniqueProjects);
     } catch (error) {
         logger.error(`Error in getProjectsByUserId: ${error.message}`, error);
@@ -273,6 +305,7 @@ async function getAllProjects(req, res) {
     }
 }
 
+// Get project by ID
 async function getProjectById(req, res) {
     try {
         const projectId = parseInt(req.params.id, 10);
@@ -287,17 +320,19 @@ async function getProjectById(req, res) {
             return res.status(400).json({ error: "Invalid user ID" });
         }
 
+        // Fetch the project and include collaborators to check access
         const project = await Project.findOne({
             where: { project_id: projectId },
             include: [
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['user_id', 'role'],
-                    where: {
-                        user_id: userId,
-                    },
-                    required: false,
+                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    include: [{
+                        model: User,
+                        as: 'user',
+                        attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                    }],
                 },
                 {
                     model: Stage,
@@ -305,10 +340,19 @@ async function getProjectById(req, res) {
                     attributes: ['stage_id', 'stage_name', 'stage_order', 'is_custom'],
                     include: [
                         {
-                            model: db.Task,
+                            model: Task,
                             as: 'tasks',
-                            // Include all necessary attributes including task_id
                             attributes: ['task_id', 'task_name', 'description', 'due_date', 'priority', 'is_completed', 'owner_id'],
+                            include: [
+                                {
+                                    model: User,
+                                    as: 'assigned_users',
+                                    attributes: ['user_id', 'first_name', 'last_name', 'email'],
+                                    through: {
+                                        attributes: ['can_view', 'can_edit'],
+                                    },
+                                },
+                            ],
                         },
                     ],
                 },
@@ -316,11 +360,21 @@ async function getProjectById(req, res) {
         });
 
         if (!project) {
-            logger.warn(`Project not found or unauthorized for project ID: ${projectId}`);
-            return res.status(404).json({ error: "Project not found or unauthorized" });
+            logger.warn(`Project not found for ID: ${projectId}`);
+            return res.status(404).json({ error: "Project not found" });
         }
 
-        logger.info(`Project retrieved successfully: ${projectId}`);
+        // Check if the requesting user is the owner or a collaborator
+        const isOwner = project.owner_id === userId;
+        const isCollaborator = project.collaborators.some(collab => collab.user_id === userId);
+
+        if (!isOwner && !isCollaborator) {
+            logger.warn(`User ${userId} is not authorized to access project ${projectId}`);
+            return res.status(403).json({ error: "You do not have permission to access this project" });
+        }
+
+        // Optionally, you can remove sensitive information or structure the response as needed
+        logger.info(`Project retrieved successfully: ${projectId} by user ${userId}`);
         res.status(200).json(project);
     } catch (error) {
         logger.error(`Error in getProjectById: ${error.message}`, error);
@@ -328,6 +382,7 @@ async function getProjectById(req, res) {
     }
 }
 
+// Update project
 async function updateProject(req, res) {
     try {
         const { id } = req.params;
@@ -366,6 +421,7 @@ async function updateProject(req, res) {
     }
 }
 
+// Add Collaborator
 async function addCollaborator(req, res) {
     try {
         logger.info(`Request Params: ${JSON.stringify(req.params)}`);
@@ -418,12 +474,17 @@ async function addCollaborator(req, res) {
     }
 }
 
+// Get Collaborators
 async function getCollaborators(req, res) {
     try {
-        const { id } = req.params;
+        const { id } = req.params; // 'id' is the project_id
         const collaborators = await ProjectCollaborator.findAll({
             where: { project_id: id },
-            include: [{ model: User, as: 'user', attributes: ['email', 'first_name', 'last_name'] }]
+            include: [{
+                model: User,
+                as: 'user',
+                attributes: ['user_id', 'first_name', 'last_name', 'email'],
+            }],
         });
         logger.info(`Collaborators retrieved for project ID ${id}: ${collaborators.length}`);
         res.status(200).json(collaborators);
@@ -433,6 +494,7 @@ async function getCollaborators(req, res) {
     }
 }
 
+// Get Stages
 async function getStages(req, res) {
     try {
         const { project_id } = req.params;
@@ -445,6 +507,7 @@ async function getStages(req, res) {
     }
 }
 
+// Get Stage By ID
 async function getStageById(req, res) {
     try {
         const { project_id, stage_id } = req.params;
@@ -470,6 +533,7 @@ async function getStageById(req, res) {
     }
 }
 
+// Create Stage
 async function createStage(req, res) {
     try {
         const { project_id } = req.params;
@@ -491,6 +555,7 @@ async function createStage(req, res) {
     }
 }
 
+// Update Stage
 async function updateStage(req, res) {
     try {
         const { project_id, stage_id } = req.params;
@@ -516,6 +581,7 @@ async function updateStage(req, res) {
     }
 }
 
+// Delete Stage
 async function deleteStage(req, res) {
     try {
         const { project_id, stage_id } = req.params;
@@ -539,6 +605,7 @@ async function deleteStage(req, res) {
     }
 }
 
+// Update Collaborator
 async function updateCollaborator(req, res) {
     try {
         const { id: project_id, collaborator_id } = req.params;
@@ -577,20 +644,62 @@ async function updateCollaborator(req, res) {
     }
 }
 
+// Delete Collaborator
 async function deleteCollaborator(req, res) {
     try {
-        const { project_id, collaborator_id } = req.params;
+        const { id, collaborator_id } = req.params; // 'id' is project_id
+        const project_id = parseInt(id, 10);
+        const collaborator_id_int = parseInt(collaborator_id, 10);
 
         logger.info(`Deleting collaborator: project_id=${project_id}, collaborator_id=${collaborator_id}`);
 
-        const deleted = await ProjectCollaborator.destroy({
-            where: { project_id, collaborator_id }
-        });
-        if (!deleted) {
-            logger.warn(`Collaborator not found or unauthorized: project_id=${project_id}, collaborator_id=${collaborator_id}`);
-            return res.status(404).json({ error: 'Collaborator not found or unauthorized' });
+        if (isNaN(project_id) || isNaN(collaborator_id_int)) {
+            logger.warn('Invalid project_id or collaborator_id provided.');
+            return res.status(400).json({ error: 'Invalid project ID or collaborator ID.' });
         }
-        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id} from project_id=${project_id}`);
+
+        // Find the collaborator entry
+        const collaborator = await ProjectCollaborator.findOne({
+            where: {
+                project_id,
+                collaborator_id: collaborator_id_int,
+            },
+        });
+
+        if (!collaborator) {
+            logger.warn(`Collaborator with ID ${collaborator_id_int} not found in project ${project_id}.`);
+            return res.status(404).json({ error: 'Collaborator not found for this project.' });
+        }
+
+        // Check for ongoing task assignments
+        const ongoingTasks = await Task.findAll({
+            where: {
+                project_id,
+                is_completed: false,
+            },
+            include: [
+                {
+                    model: TaskAssignment,
+                    as: 'taskAssignments', // Ensure this matches your Task model association
+                    where: {
+                        user_id: collaborator.user_id,
+                    },
+                    required: true,
+                },
+            ],
+        });
+
+        if (ongoingTasks.length > 0) {
+            logger.warn(`Collaborator ID ${collaborator.user_id} has ongoing tasks in project ${project_id}.`);
+            return res.status(400).json({
+                error: 'Cannot remove collaborator with ongoing task assignments.',
+            });
+        }
+
+        // Proceed to delete the collaborator
+        await collaborator.destroy();
+
+        logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id_int} from project_id=${project_id}`);
         res.json({ message: 'Collaborator removed successfully' });
     } catch (error) {
         logger.error(`Error in deleteCollaborator: ${error.message}`, error);
@@ -598,6 +707,7 @@ async function deleteCollaborator(req, res) {
     }
 }
 
+// Delete Project
 async function deleteProject(req, res) {
     try {
         const { id } = req.params;

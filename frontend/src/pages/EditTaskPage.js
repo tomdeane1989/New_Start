@@ -31,14 +31,12 @@ function EditTaskPage() {
         const stagesResponse = await axios.get(`${process.env.REACT_APP_API_URL}/projects/${projectId}/stages`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        console.log('Fetched stages:', stagesResponse.data);
         setStages(stagesResponse.data);
 
         // Fetch task data
         const taskResponse = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/${taskId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        console.log('Fetched task data:', taskResponse.data);
         setTaskData(taskResponse.data);
       } catch (error) {
         console.error('Error fetching data:', error);
@@ -66,11 +64,6 @@ function EditTaskPage() {
         navigate('/login');
         return;
       }
-
-      console.log('Updating task with data:', {
-        ...updatedTaskData,
-        project_id: parseInt(projectId, 10),
-      });
 
       await axios.put(
         `${process.env.REACT_APP_API_URL}/tasks/${taskId}`,

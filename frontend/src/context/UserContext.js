@@ -1,4 +1,4 @@
-// Frontend/src/context/UserContext.js
+// src/context/UserContext.js
 
 import React, { createContext, useState, useEffect } from 'react';
 import axios from 'axios';
@@ -17,7 +17,6 @@ export function UserProvider({ children }) {
       })
         .then((response) => {
           // Assuming response.data contains the user object
-          console.log('User data from /users/me:', response.data); // Debug log
           setUser(response.data);
         })
         .catch((error) => {
