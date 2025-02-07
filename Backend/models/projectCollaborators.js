@@ -1,15 +1,12 @@
 // models/projectCollaborators.js
-// Backend/models/projectCollaborators.js
 
 const { Model, DataTypes } = require('sequelize');
 
 module.exports = (sequelize) => {
   class ProjectCollaborator extends Model {
     static associate(models) {
-      console.log('Associating ProjectCollaborator with Project and User');
       this.belongsTo(models.Project, { foreignKey: 'project_id', as: 'project' });
       this.belongsTo(models.User, { foreignKey: 'user_id', as: 'user' });
-      console.log('Associations for ProjectCollaborator:', this.associations);
     }
   }
 
@@ -29,13 +26,18 @@ module.exports = (sequelize) => {
         allowNull: false,
       },
       role: { 
-        type: DataTypes.INTEGER, // Store role as an integer
+        type: DataTypes.INTEGER, 
         allowNull: false,
-        defaultValue: 0 // Default to Buyer (0)
+        defaultValue: 0
       },
       assigned_at: {
         type: DataTypes.DATE,
         defaultValue: DataTypes.NOW,
+      },
+      // NEW COLUMN:
+      awaiting_approval: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
       },
     },
     {

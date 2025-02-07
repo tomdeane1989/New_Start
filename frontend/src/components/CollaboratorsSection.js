@@ -9,12 +9,12 @@ import {
   Form, 
   Modal, 
   Spinner, 
-  OverlayTrigger, // Imported OverlayTrigger
-  Tooltip          // Imported Tooltip
-} from 'react-bootstrap'; // Added OverlayTrigger and Tooltip to imports
+  OverlayTrigger,
+  Tooltip
+} from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
-import ConfirmModal from './ConfirmModal'; // Import ConfirmModal
-import { v4 as uuidv4 } from 'uuid'; // Import uuid for unique IDs
+import ConfirmModal from './ConfirmModal';
+import { v4 as uuidv4 } from 'uuid';
 
 const roleOptions = [
   { value: '0', label: 'Buyer' },
@@ -39,6 +39,8 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
   const [isAdding, setIsAdding] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [collaboratorToDelete, setCollaboratorToDelete] = useState(null);
+  const [isApproving, setIsApproving] = useState(false);
+
   const navigate = useNavigate();
 
   const handleAddCollaborator = async (e) => {
@@ -70,10 +72,12 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
 
   const handleDeleteCollaborator = async () => {
     const token = localStorage.getItem('jwtToken');
+    if (!collaboratorToDelete) return;
     try {
-      await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaboratorToDelete.collaborator_id}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await axios.delete(
+        `${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaboratorToDelete.collaborator_id}`, 
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       toast.success('Collaborator removed successfully!');
       setShowDeleteModal(false);
       setCollaboratorToDelete(null);
@@ -84,63 +88,22 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
     }
   };
 
-  const getCollaboratorInfo = (userId) => {
-    const collab = collaborators.find(c => c.user_id === userId);
-    if (!collab || !collab.user) return { name: 'Unknown', role: 'Unknown' };
-    const name = `${collab.user.first_name || ''} ${collab.user.last_name || ''}`.trim() || 'Unknown';
-    const roleLabel = getRoleLabel(collab.role);
-    return { name, role: roleLabel };
-  };
-
-  const renderAssignedUsers = (task) => {
-    if (!task.assigned_users || task.assigned_users.length === 0) {
-      return <span className="text-muted">None</span>;
-    }
-
-    const assignedDetails = task.assigned_users.map(u => getCollaboratorInfo(u.user_id));
-    const displayLimit = 2;
-
-    if (assignedDetails.length <= displayLimit) {
-      return (
-        <>
-          {assignedDetails.map((a, idx) => (
-            <span key={idx} className="me-2">
-              {a.name} ({a.role})
-            </span>
-          ))}
-        </>
+  const handleApproveCollaborator = async (collab) => {
+    try {
+      setIsApproving(true);
+      const token = localStorage.getItem('jwtToken');
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collab.collaborator_id}/approve`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
       );
-    } else {
-      const firstTwo = assignedDetails.slice(0, displayLimit);
-      const remaining = assignedDetails.slice(displayLimit);
-      const tooltipId = uuidv4(); // Unique ID
-
-      const tooltip = (
-        <Tooltip id={tooltipId}>
-          {remaining.map((a, idx) => (
-            <div key={idx}>
-              {a.name} ({a.role})
-            </div>
-          ))}
-        </Tooltip>
-      );
-
-      return (
-        <>
-          {firstTwo.map((a, idx) => (
-            <span key={idx} className="me-2">
-              {a.name} ({a.role})
-            </span>
-          ))}
-          {remaining.length > 0 && (
-            <OverlayTrigger overlay={tooltip} placement="right">
-              <span className="text-primary" style={{ cursor: 'pointer' }}>
-                +{remaining.length} more
-              </span>
-            </OverlayTrigger>
-          )}
-        </>
-      );
+      toast.success('Collaborator approved!');
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error approving collaborator:', error);
+      toast.error('Failed to approve collaborator.');
+    } finally {
+      setIsApproving(false);
     }
   };
 
@@ -153,6 +116,7 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
             <thead>
               <tr>
                 <th>Name & Role</th>
+                <th>Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -160,10 +124,29 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
               {collaborators.map((collab) => {
                 const name = `${collab.user?.first_name || ''} ${collab.user?.last_name || ''}`.trim() || 'Unknown User';
                 const roleLabel = getRoleLabel(collab.role);
+                const awaiting = collab.awaiting_approval;
+
                 return (
                   <tr key={collab.collaborator_id}>
                     <td>{name} ({roleLabel})</td>
                     <td>
+                      {awaiting
+                        ? <span className="text-warning">Pending Approval</span>
+                        : <span className="text-success">Approved</span>
+                      }
+                    </td>
+                    <td>
+                      {awaiting && (
+                        <Button 
+                          variant="outline-success"
+                          size="sm"
+                          disabled={isApproving}
+                          onClick={() => handleApproveCollaborator(collab)}
+                          className="me-2"
+                        >
+                          Approve
+                        </Button>
+                      )}
                       <Button
                         variant="outline-danger"
                         size="sm"
@@ -185,7 +168,11 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
         <p>No collaborators found.</p>
       )}
 
-      <Button variant={showAddForm ? 'secondary' : 'success'} className="mt-3" onClick={() => setShowAddForm(!showAddForm)}>
+      <Button 
+        variant={showAddForm ? 'secondary' : 'success'}
+        className="mt-3"
+        onClick={() => setShowAddForm(!showAddForm)}
+      >
         {showAddForm ? 'Cancel' : 'Add Collaborator'}
       </Button>
 
@@ -214,7 +201,9 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
                 onChange={(e) => setNewCollaboratorRole(e.target.value)}
               >
                 {roleOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
                 ))}
               </Form.Control>
             </Form.Group>

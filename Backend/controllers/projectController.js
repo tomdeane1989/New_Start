@@ -1,4 +1,5 @@
 // Backend/controllers/projectController.js
+
 const db = require('../models');
 const { Project, Stage, User, ProjectCollaborator, Task, TaskAssignment } = db;
 const logger = require('../logger'); // Import Winston logger
@@ -119,14 +120,17 @@ async function createProject(req, res) {
 
         logger.info(`Project created successfully: ${project.project_id} by user_id: ${owner_id}`);
 
+        // The owner is automatically a collaborator with no approval needed
         await ProjectCollaborator.create({
             project_id: project.project_id,
             user_id: owner_id,
             role: user_role,
+            awaiting_approval: false, // Owner = auto-approved
         });
 
         logger.info(`Owner assigned as collaborator with role: ${user_role}`);
 
+        // Create default stages
         const stagesToAdd = defaultStages.map(stage => ({
             ...stage,
             project_id: project.project_id,
@@ -137,7 +141,7 @@ async function createProject(req, res) {
         const stages = await Stage.bulkCreate(stagesToAdd, { returning: true });
         logger.info(`Default stages created for project_id: ${project.project_id}`);
 
-
+        // Create default tasks
         const thirtyDaysLater = new Date();
         thirtyDaysLater.setDate(thirtyDaysLater.getDate() + 30);
 
@@ -155,8 +159,8 @@ async function createProject(req, res) {
                 owner_id: owner_id,
                 created_at: new Date(),
                 updated_at: new Date(),
-                due_date: thirtyDaysLater,    // Set default due date 30 days later
-                priority: 'Medium',           // Set default priority to Medium
+                due_date: thirtyDaysLater,
+                priority: 'Medium',
             }));
         });
 
@@ -176,8 +180,6 @@ async function createProject(req, res) {
 }
 
 // Get projects by authenticated user
-// Backend/controllers/projectController.js
-
 async function getProjectsByUserId(req, res) {
     logger.info(`Fetching projects for user: ${req.user.id}`);
 
@@ -188,14 +190,14 @@ async function getProjectsByUserId(req, res) {
             return res.status(400).json({ error: 'Invalid user ID' });
         }
 
-        // Fetch projects owned by the user with detailed collaborator info
+        // Owned Projects
         const ownedProjects = await Project.findAll({
             where: { owner_id: userId },
             include: [
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    attributes: ['collaborator_id', 'user_id', 'role', 'awaiting_approval'],
                     include: [
                         {
                             model: User,
@@ -231,7 +233,7 @@ async function getProjectsByUserId(req, res) {
 
         logger.info(`Owned projects retrieved: ${ownedProjects.length}`);
 
-        // Fetch projects where the user is a collaborator with detailed user info
+        // Collaborator Projects
         const collaboratorProjects = await Project.findAll({
             include: [
                 {
@@ -239,7 +241,7 @@ async function getProjectsByUserId(req, res) {
                     as: 'collaborators',
                     where: { user_id: userId },
                     required: true,
-                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    attributes: ['collaborator_id', 'user_id', 'role', 'awaiting_approval'],
                     include: [
                         {
                             model: User,
@@ -249,22 +251,19 @@ async function getProjectsByUserId(req, res) {
                     ],
                 },
             ],
-            // Exclude projects already fetched as owned projects to prevent duplication
             where: {
-                owner_id: { [db.Sequelize.Op.ne]: userId }, // Assuming 'db' is imported and Sequelize is accessible
+                owner_id: { [db.Sequelize.Op.ne]: userId },
             },
-            includeIgnoreAttributes: false, // Ensure all includes are processed
+            includeIgnoreAttributes: false,
         });
 
         logger.info(`Collaborator projects retrieved: ${collaboratorProjects.length}`);
 
-        // Combine owned and collaborator projects
+        // Combine
         const allProjects = [...ownedProjects, ...collaboratorProjects];
-
-        // Remove duplicate projects based on project_id
         const uniqueProjectsMap = new Map();
-        allProjects.forEach((project) => {
-            uniqueProjectsMap.set(project.project_id, project);
+        allProjects.forEach((p) => {
+            uniqueProjectsMap.set(p.project_id, p);
         });
         const uniqueProjects = Array.from(uniqueProjectsMap.values());
 
@@ -286,7 +285,7 @@ async function getAllProjects(req, res) {
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['user_id', 'role'],
+                    attributes: ['user_id', 'role', 'awaiting_approval'],
                     required: false,
                 },
                 {
@@ -320,14 +319,13 @@ async function getProjectById(req, res) {
             return res.status(400).json({ error: "Invalid user ID" });
         }
 
-        // Fetch the project and include collaborators to check access
         const project = await Project.findOne({
             where: { project_id: projectId },
             include: [
                 {
                     model: ProjectCollaborator,
                     as: 'collaborators',
-                    attributes: ['collaborator_id', 'user_id', 'role'],
+                    attributes: ['collaborator_id', 'user_id', 'role', 'awaiting_approval'],
                     include: [{
                         model: User,
                         as: 'user',
@@ -349,7 +347,7 @@ async function getProjectById(req, res) {
                                     as: 'assigned_users',
                                     attributes: ['user_id', 'first_name', 'last_name', 'email'],
                                     through: {
-                                        attributes: ['can_view', 'can_edit'],
+                                        attributes: ['can_view', 'can_edit', 'awaiting_approval', 'assignment_id'],
                                     },
                                 },
                             ],
@@ -364,7 +362,6 @@ async function getProjectById(req, res) {
             return res.status(404).json({ error: "Project not found" });
         }
 
-        // Check if the requesting user is the owner or a collaborator
         const isOwner = project.owner_id === userId;
         const isCollaborator = project.collaborators.some(collab => collab.user_id === userId);
 
@@ -373,7 +370,6 @@ async function getProjectById(req, res) {
             return res.status(403).json({ error: "You do not have permission to access this project" });
         }
 
-        // Optionally, you can remove sensitive information or structure the response as needed
         logger.info(`Project retrieved successfully: ${projectId} by user ${userId}`);
         res.status(200).json(project);
     } catch (error) {
@@ -421,7 +417,7 @@ async function updateProject(req, res) {
     }
 }
 
-// Add Collaborator
+// Add Collaborator (auto-approve if user is the project owner)
 async function addCollaborator(req, res) {
     try {
         logger.info(`Request Params: ${JSON.stringify(req.params)}`);
@@ -429,6 +425,7 @@ async function addCollaborator(req, res) {
 
         const { id: project_id } = req.params;
         let { email, role } = req.body;
+        const requestingUserId = req.user?.id;
 
         if (!project_id) {
             logger.error("Invalid or missing project_id in request parameters.");
@@ -436,7 +433,6 @@ async function addCollaborator(req, res) {
         }
 
         const collaborator = await User.findOne({ where: { email } });
-
         if (!collaborator) {
             logger.error(`Collaborator not found for email: ${email}`);
             return res.status(404).json({ error: 'Collaborator not found' });
@@ -445,7 +441,6 @@ async function addCollaborator(req, res) {
         const existingCollaboration = await ProjectCollaborator.findOne({
             where: { project_id, user_id: collaborator.user_id },
         });
-
         if (existingCollaboration) {
             logger.warn('User is already a collaborator on this project.');
             return res.status(400).json({ error: 'User is already a collaborator on this project' });
@@ -457,15 +452,24 @@ async function addCollaborator(req, res) {
             return res.status(400).json({ error: 'Invalid role supplied. Must be an integer.' });
         }
 
+        // Check if the requesting user is actually the project owner
+        const project = await Project.findOne({ where: { project_id, owner_id: requestingUserId } });
+        const isOwner = !!project; // If found => is owner
+
+        // If project owner => auto-approve; otherwise => set awaiting_approval
+        const awaiting = isOwner ? false : true;
+
         const newCollaboration = await ProjectCollaborator.create({
             project_id,
             user_id: collaborator.user_id,
             role: parsedRole,
+            awaiting_approval: awaiting,
         });
 
-        logger.info(`Collaborator added successfully: ${JSON.stringify(newCollaboration)}`);
+        logger.info(`Collaborator added${awaiting ? ' (pending approval)' : ' with direct approval'}: ${JSON.stringify(newCollaboration)}`);
+
         res.status(201).json({
-            message: 'Collaborator added successfully',
+            message: `Collaborator added successfully${awaiting ? ' (awaiting approval)' : ''}`,
             collaboration: newCollaboration,
         });
     } catch (error) {
@@ -491,6 +495,45 @@ async function getCollaborators(req, res) {
     } catch (error) {
         logger.error(`Error in getCollaborators: ${error.message}`, error);
         res.status(500).json({ error: "Error retrieving collaborators" });
+    }
+}
+
+// Approve collaborator
+async function approveCollaborator(req, res) {
+    try {
+        const { id: project_id, collaborator_id } = req.params;
+        const userId = req.user?.id;
+
+        logger.info(`User ${userId} attempting to approve collaborator ${collaborator_id} in project ${project_id}`);
+
+        // Must be project owner
+        const project = await Project.findOne({ where: { project_id, owner_id: userId } });
+        if (!project) {
+            logger.warn(`Project not found or not owned by user: project_id=${project_id}, user_id=${userId}`);
+            return res.status(403).json({ error: 'You do not have permission to approve collaborators on this project' });
+        }
+
+        const collabRecord = await ProjectCollaborator.findOne({
+            where: { collaborator_id, project_id },
+        });
+        if (!collabRecord) {
+            logger.warn(`Collaborator record not found: collaborator_id=${collaborator_id}`);
+            return res.status(404).json({ error: 'Collaborator record not found' });
+        }
+
+        if (!collabRecord.awaiting_approval) {
+            logger.info(`Collaborator ${collaborator_id} is already approved`);
+            return res.status(200).json({ message: 'Collaborator is already approved' });
+        }
+
+        collabRecord.awaiting_approval = false;
+        await collabRecord.save();
+
+        logger.info(`Collaborator ${collaborator_id} approved successfully.`);
+        res.status(200).json({ message: 'Collaborator approved', collaborator: collabRecord });
+    } catch (error) {
+        logger.error(`Error approving collaborator: ${error.message}`, error);
+        res.status(500).json({ error: 'Error approving collaborator' });
     }
 }
 
@@ -624,8 +667,6 @@ async function updateCollaborator(req, res) {
             return res.status(400).json({ error: "Invalid or missing integer role in request body." });
         }
 
-        logger.info(`Updating collaborator with: project_id=${project_id}, collaborator_id=${collaborator_id}, parsedRole=${parsedRole}`);
-
         const [updated] = await ProjectCollaborator.update(
             { role: parsedRole },
             { where: { project_id, collaborator_id } }
@@ -658,7 +699,6 @@ async function deleteCollaborator(req, res) {
             return res.status(400).json({ error: 'Invalid project ID or collaborator ID.' });
         }
 
-        // Find the collaborator entry
         const collaborator = await ProjectCollaborator.findOne({
             where: {
                 project_id,
@@ -671,7 +711,7 @@ async function deleteCollaborator(req, res) {
             return res.status(404).json({ error: 'Collaborator not found for this project.' });
         }
 
-        // Check for ongoing task assignments
+        // Check for ongoing tasks
         const ongoingTasks = await Task.findAll({
             where: {
                 project_id,
@@ -680,7 +720,7 @@ async function deleteCollaborator(req, res) {
             include: [
                 {
                     model: TaskAssignment,
-                    as: 'taskAssignments', // Ensure this matches your Task model association
+                    as: 'taskAssignments',
                     where: {
                         user_id: collaborator.user_id,
                     },
@@ -696,7 +736,6 @@ async function deleteCollaborator(req, res) {
             });
         }
 
-        // Proceed to delete the collaborator
         await collaborator.destroy();
 
         logger.info(`Collaborator removed successfully: collaborator_id=${collaborator_id_int} from project_id=${project_id}`);
@@ -745,7 +784,6 @@ const testProjectCollaboratorsAssociation = async (req, res) => {
         res.status(500).json({ error: "Error testing ProjectCollaborators association" });
     }
 };
-// Testing stop
 
 module.exports = {
     createProject,
@@ -765,4 +803,5 @@ module.exports = {
     deleteProject,
     isProjectOwner,
     testProjectCollaboratorsAssociation,
+    approveCollaborator,
 };

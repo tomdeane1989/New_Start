@@ -1,4 +1,5 @@
 // Backend/routes/projectRoutes.js
+
 const express = require('express');
 const router = express.Router();
 const {
@@ -12,18 +13,18 @@ const {
     getCollaborators,
     updateCollaborator,
     deleteCollaborator,
-    getStages,       // Imported for stage-specific operations
-    getStageById,    // Imported for fetching a specific stage
-    createStage,     // Imported for creating custom stages
-    updateStage,     // Imported for updating custom stages
-    deleteStage,     // Imported for deleting custom stages
+    getStages,
+    getStageById,
+    createStage,
+    updateStage,
+    deleteStage,
+    approveCollaborator,
 } = require('../controllers/projectController');
 const authMiddleware = require('../middleware/authMiddleware');
 
-// Apply authentication to all project routes
 router.use(authMiddleware);
 
-// Project CRUD operations
+// Project CRUD
 router.post('/create', createProject);
 router.get('/user', getProjectsByUserId);
 router.get('/all', getAllProjects);
@@ -33,15 +34,16 @@ router.post('/:id/collaborators', addCollaborator);
 router.get('/:id/collaborators', getCollaborators);
 router.put('/:id/collaborators/:collaborator_id', updateCollaborator);
 router.delete('/:id/collaborators/:collaborator_id', deleteCollaborator);
+router.put('/:id/collaborators/:collaborator_id/approve', approveCollaborator);
 
-// Stage operations
-router.get('/:project_id/stages/:stage_id', getStageById); // Fetch specific stage
-router.get('/:project_id/stages', getStages);               // Fetch all stages
-router.post('/:project_id/stages', createStage);            // Create a custom stage
-router.put('/:project_id/stages/:stage_id', updateStage);   // Update a custom stage
-router.delete('/:project_id/stages/:stage_id', deleteStage); // Delete a custom stage
+// Stage ops
+router.get('/:project_id/stages/:stage_id', getStageById);
+router.get('/:project_id/stages', getStages);
+router.post('/:project_id/stages', createStage);
+router.put('/:project_id/stages/:stage_id', updateStage);
+router.delete('/:project_id/stages/:stage_id', deleteStage);
 
-// Project detail routes (should come after more specific routes to prevent conflicts)
+// Project detail routes
 router.get('/:id', getProjectById);
 router.put('/:id', updateProject);
 router.delete('/:id', deleteProject);

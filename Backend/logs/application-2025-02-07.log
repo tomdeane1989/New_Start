@@ -1,0 +1,2 @@
+{"level":"info","message":"Loaded Routes: {\"user\":\"/api/users\",\"project\":\"/api/projects\",\"task\":\"/api/tasks\",\"company\":\"/api/companies\"}","service":"project-management-service","timestamp":"2025-02-07 16:31:24"}
+{"level":"info","message":"Server running on port 5001","service":"project-management-service","timestamp":"2025-02-07 16:31:24"}

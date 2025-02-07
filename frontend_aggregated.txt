@@ -11,11 +11,12 @@ import {
   Modal,
   OverlayTrigger,
   Tooltip,
-  InputGroup
+  InputGroup,
+  Badge,
 } from 'react-bootstrap';
 import axios from 'axios';
 import { toast } from 'react-toastify';
-import { FaTrash } from 'react-icons/fa';
+import { FaTrash, FaEye, FaTimes } from 'react-icons/fa';
 
 const roleMapping = [
   { value: 0, label: 'Buyer' },
@@ -44,21 +45,41 @@ function TaskForm({
   isModal = true,
   collaborators = [],
 }) {
+  // Format any existing due_date
   const formattedDueDate = (taskData && taskData.due_date)
     ? new Date(taskData.due_date).toISOString().split('T')[0]
     : '';
 
-  // If 'stage_id' is missing or invalid, store as string
+  /**
+   * We'll store assignedUsers as an array of objects:
+   *    { user_id, can_edit }
+   * By default, can_edit = true. We'll keep it simple for now.
+   */
+  const [assignedUsers, setAssignedUsers] = useState(() => {
+    if (!taskData || !taskData.assigned_users) return [];
+    // If your taskData.assigned_users doesn't have can_edit info yet,
+    // we'll default them to { user_id, can_edit: true } just to avoid confusion
+    return taskData.assigned_users.map(u => {
+      // If your API already returns can_edit, you can read it directly
+      const canEdit = (u.TaskAssignment && typeof u.TaskAssignment.can_edit === 'boolean')
+        ? u.TaskAssignment.can_edit
+        : true; // default fallback
+
+      return {
+        user_id: u.user_id,
+        can_edit: canEdit,
+      };
+    });
+  });
+
+  // Basic form data
   const [formData, setFormData] = useState({
     task_name: taskData ? taskData.task_name : '',
     description: taskData ? (taskData.description || '') : '',
     due_date: formattedDueDate,
     priority: taskData ? (taskData.priority || 'Medium') : 'Medium',
     is_completed: taskData ? taskData.is_completed : false,
-    stage_id: initialStageId || '', // store as string
-    assigned_users: taskData && taskData.assigned_users
-      ? taskData.assigned_users.map(u => String(u.user_id))
-      : [],
+    stage_id: initialStageId || '',
     documents: (taskData && taskData.documents)
       ? taskData.documents.map(d => d.document_id)
       : [],
@@ -66,7 +87,20 @@ function TaskForm({
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [allDocuments, setAllDocuments] = useState([]);
+
+  // For uploading a doc
   const [newFile, setNewFile] = useState(null);
+  const [newFileTag, setNewFileTag] = useState('');
+
+  // For adding an existing doc
+  const [pendingDocId, setPendingDocId] = useState('');
+
+  // Document preview modal
+  const [previewDoc, setPreviewDoc] = useState(null);
+  const [showDocPreview, setShowDocPreview] = useState(false);
+
+  // For adding an assignee
+  const [candidateUserId, setCandidateUserId] = useState('');
 
   useEffect(() => {
     fetchAllDocuments();
@@ -86,37 +120,92 @@ function TaskForm({
     }
   };
 
-  // For normal fields
+  // Basic field changes
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
-
     let newValue;
     if (type === 'checkbox') {
       newValue = checked;
-    } else if (name === 'stage_id') {
-      // store stage as string
-      newValue = value;
     } else {
       newValue = value;
     }
-
     setFormData(prev => ({ ...prev, [name]: newValue }));
   };
 
-  // For multiple assigned users
-  const handleAssigneesChange = (e) => {
-    const selectedOptions = Array.from(e.target.selectedOptions);
-    const selectedUserIds = selectedOptions.map(opt => opt.value);
-    setFormData(prev => ({ ...prev, assigned_users: selectedUserIds }));
+  // Add an assignee (default can_edit = true)
+  const handleAddAssignee = () => {
+    if (!candidateUserId) {
+      toast.warn('Select a user from the dropdown to add.');
+      return;
+    }
+    // Check if already assigned
+    const existing = assignedUsers.find(a => String(a.user_id) === candidateUserId);
+    if (existing) {
+      toast.info('That user is already assigned.');
+      return;
+    }
+    // Find collaborator for display name, if needed
+    const collab = collaborators.find(c => String(c.user_id) === candidateUserId);
+    if (!collab) {
+      toast.error('Could not find collaborator with that user ID.');
+      return;
+    }
+    // We'll just store user_id + can_edit = true
+    setAssignedUsers(prev => [
+      ...prev,
+      {
+        user_id: parseInt(candidateUserId, 10),
+        can_edit: true, // default to true
+      },
+    ]);
+    setCandidateUserId('');
   };
 
-  // For multiple documents
-  const handleDocumentSelectChange = (e) => {
-    const selectedOptions = Array.from(e.target.selectedOptions);
-    const selectedDocIds = selectedOptions.map(opt => parseInt(opt.value, 10));
-    setFormData(prev => ({ ...prev, documents: selectedDocIds }));
+  const handleRemoveAssignee = (userId) => {
+    setAssignedUsers(prev => prev.filter(a => a.user_id !== userId));
   };
 
+  // Handle doc multi-select
+  const handleAddExistingDoc = () => {
+    if (!pendingDocId) {
+      toast.warn('Select a document to add.');
+      return;
+    }
+    const docIdNum = parseInt(pendingDocId, 10);
+    if (formData.documents.includes(docIdNum)) {
+      toast.info('That document is already attached.');
+      return;
+    }
+    setFormData(prev => ({
+      ...prev,
+      documents: [...prev.documents, docIdNum],
+    }));
+    setPendingDocId('');
+  };
+
+  const handleRemoveDocument = (docId) => {
+    setFormData(prev => ({
+      ...prev,
+      documents: prev.documents.filter(d => d !== docId),
+    }));
+  };
+
+  // Document preview
+  const showDocumentPreview = (docId) => {
+    const doc = allDocuments.find(d => d.document_id === docId);
+    if (!doc) {
+      toast.error('Document not found.');
+      return;
+    }
+    setPreviewDoc(doc);
+    setShowDocPreview(true);
+  };
+  const closeDocPreview = () => {
+    setPreviewDoc(null);
+    setShowDocPreview(false);
+  };
+
+  // Upload new doc
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       setNewFile(e.target.files[0]);
@@ -137,25 +226,24 @@ function TaskForm({
         toast.warn('You must be logged in to upload documents.');
         return;
       }
-
       const fd = new FormData();
       fd.append('file', newFile);
-      // any additional form fields for tags, etc.
+      if (newFileTag.trim()) {
+        fd.append('singleTag', newFileTag.trim());
+      }
 
       const response = await axios.post(`${process.env.REACT_APP_API_URL}/documents`, fd, {
         headers: { Authorization: `Bearer ${token}` },
       });
       const uploadedDoc = response.data;
-
-      // Add to doc list
       setAllDocuments(prev => [...prev, uploadedDoc]);
-      // Attach to form
       setFormData(prev => ({
         ...prev,
         documents: [...prev.documents, uploadedDoc.document_id],
       }));
       toast.success('Document uploaded and attached!');
       setNewFile(null);
+      setNewFileTag('');
     } catch (error) {
       console.error('Error uploading document:', error);
       toast.error('Failed to upload document.');
@@ -164,6 +252,7 @@ function TaskForm({
     }
   };
 
+  // Delete task (if editing)
   const handleDeleteTask = async () => {
     if (!taskData || !taskData.task_id) return;
     try {
@@ -173,7 +262,6 @@ function TaskForm({
         toast.warn('You must be logged in to delete tasks.');
         return;
       }
-
       await axios.delete(`${process.env.REACT_APP_API_URL}/tasks/${taskData.task_id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -187,16 +275,14 @@ function TaskForm({
     }
   };
 
+  // Submit the form
   const handleSubmit = async (e) => {
     e.preventDefault();
-
-    // convert stage_id to a number
     const stageIdNum = formData.stage_id ? parseInt(formData.stage_id, 10) : null;
     if (!projectId || !stageIdNum || !formData.task_name || !formData.priority) {
       toast.warn('Please ensure Stage, Task Name, and Priority are set.');
       return;
     }
-
     setIsSubmitting(true);
 
     try {
@@ -207,18 +293,21 @@ function TaskForm({
         return;
       }
 
-      const submissionAssigned = formData.assigned_users.map(u => parseInt(u, 10));
-
+      // Convert assigned users from state
       const submissionData = {
-        ...formData,
+        task_name: formData.task_name,
+        description: formData.description?.trim() || '',
+        due_date: formData.due_date || undefined,
+        priority: formData.priority,
+        is_completed: formData.is_completed,
         stage_id: stageIdNum,
         project_id: parseInt(projectId, 10),
-        assigned_users: submissionAssigned,
+        documents: formData.documents,
+        assigned_users: assignedUsers, // an array of { user_id, can_edit }
       };
-
-      // Clean up empty fields
-      if (!submissionData.due_date) delete submissionData.due_date;
-      if (!submissionData.description?.trim()) delete submissionData.description;
+      if (!submissionData.description) {
+        delete submissionData.description;
+      }
 
       if (mode === 'edit') {
         if (!taskData || !taskData.task_id) {
@@ -238,7 +327,7 @@ function TaskForm({
         toast.success('Task created successfully!');
       }
 
-      onSubmit(formData);
+      onSubmit();
     } catch (error) {
       console.error('Error saving task:', error);
       if (error.response) {
@@ -255,30 +344,97 @@ function TaskForm({
     }
   };
 
-  // Document dropdown option with a tooltip
-  const renderDocumentOption = (doc) => {
-    const tag = doc.tags && doc.tags.length > 0 ? doc.tags[0] : '(No Tag)';
-    const filename = doc.original_filename || doc.file_name;
-    const uploadedBy = doc.uploaded_by || 'Unknown user';
-    const uploadDate = doc.uploaded_date ? new Date(doc.uploaded_date).toLocaleString() : 'Unknown date';
-
+  // Renders assigned users as “chips”
+  const renderAssignedUsersChips = () => {
+    if (!assignedUsers.length) return null;
     return (
-      <OverlayTrigger
-        key={doc.document_id}
-        placement="right"
-        overlay={
-          <Tooltip>
-            {filename}<br/>
-            Uploaded by: {uploadedBy}<br/>
-            On: {uploadDate}
-          </Tooltip>
-        }
-      >
-        <option value={doc.document_id}>{tag}</option>
-      </OverlayTrigger>
+      <div className="mb-3">
+        <Form.Label>Currently Assigned:</Form.Label>
+        <div>
+          {assignedUsers.map(a => {
+            // For display, we might just show "User#ID (Edit Access)" or something
+            const collaborator = collaborators.find(c => c.user_id === a.user_id);
+            const firstName = collaborator?.user?.first_name || '';
+            const lastName = collaborator?.user?.last_name || '';
+            const nameLabel = (firstName || lastName)
+              ? `${firstName} ${lastName}`
+              : `User#${a.user_id}`;
+            return (
+              <Badge bg="info" text="dark" className="me-2 mb-2" key={a.user_id}>
+                {nameLabel} {a.can_edit ? '(Edit)' : '(View only)'}
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="text-danger ms-2 p-0"
+                  onClick={() => handleRemoveAssignee(a.user_id)}
+                >
+                  <FaTimes />
+                </Button>
+              </Badge>
+            );
+          })}
+        </div>
+      </div>
     );
   };
 
+  // Renders attached docs as “chips” with preview
+  const renderAttachedDocs = () => {
+    if (!formData.documents.length) return null;
+    return (
+      <div className="mb-3">
+        <Form.Label>Attached Documents:</Form.Label>
+        <div>
+          {formData.documents.map(docId => {
+            const doc = allDocuments.find(d => d.document_id === docId);
+            if (!doc) return null;
+            const label = doc.original_filename || doc.file_name;
+
+            // Tooltip for doc
+            const docTooltip = (
+              <Tooltip id={`doc-tooltip-${docId}`}>
+                {label}
+                <br />
+                Uploaded by: {doc.uploaded_by || 'Unknown'}
+                <br />
+                {doc.uploaded_date ? new Date(doc.uploaded_date).toLocaleString() : 'Unknown date'}
+              </Tooltip>
+            );
+
+            return (
+              <OverlayTrigger
+                key={docId}
+                placement="top"
+                overlay={docTooltip}
+              >
+                <Badge bg="info" text="dark" className="me-2 mb-2">
+                  <span
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => showDocumentPreview(docId)}
+                  >
+                    {label} <FaEye />
+                  </span>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="text-danger ms-2 p-0"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveDocument(docId);
+                    }}
+                  >
+                    <FaTimes />
+                  </Button>
+                </Badge>
+              </OverlayTrigger>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  // Main form content
   const formContent = (
     <Form onSubmit={handleSubmit}>
       <Form.Group controlId="taskName" className="mb-3">
@@ -346,7 +502,7 @@ function TaskForm({
         <Form.Label>Stage</Form.Label>
         <Form.Select name="stage_id" value={formData.stage_id} onChange={handleChange} required>
           <option value="">Select Stage</option>
-          {stages.map((stage) => (
+          {stages.map(stage => (
             <option key={stage.stage_id} value={String(stage.stage_id)}>
               {stage.stage_name}
             </option>
@@ -354,64 +510,89 @@ function TaskForm({
         </Form.Select>
       </Form.Group>
 
-      <Form.Group controlId="assigned_users" className="mb-3">
-        <Form.Label>Assign To (optional)</Form.Label>
-        <Form.Control
-          as="select"
-          multiple
-          name="assigned_users"
-          value={formData.assigned_users}
-          onChange={handleAssigneesChange}
+      {/* Assigned Users */}
+      {renderAssignedUsersChips()}
+
+      <Form.Group className="mb-3" controlId="candidateUser">
+        <Form.Label>Assign a Collaborator</Form.Label>
+        <Form.Select
+          value={candidateUserId}
+          onChange={(e) => setCandidateUserId(e.target.value)}
         >
-          {collaborators.map((c) => {
+          <option value="">Select a collaborator</option>
+          {collaborators.map(c => {
             const firstName = c.user?.first_name || '';
             const lastName = c.user?.last_name || '';
-            const name = `${firstName} ${lastName}`.trim() || 'Unknown User';
-            const roleLabel = getRoleLabel(c.role);
+            const name = `${firstName} ${lastName}`.trim() || `User#${c.user_id}`;
             return (
               <option key={c.collaborator_id} value={String(c.user_id)}>
-                {name} ({roleLabel})
+                {name} (User# {c.user_id})
               </option>
             );
           })}
-        </Form.Control>
+        </Form.Select>
+        <Button
+          variant="outline-primary"
+          size="sm"
+          className="mt-2"
+          onClick={handleAddAssignee}
+        >
+          Add
+        </Button>
       </Form.Group>
 
-      {/* Documents multi-select */}
+      {/* Document Chips */}
+      {renderAttachedDocs()}
+
+      {/* Add an existing doc */}
       <Form.Group controlId="documents" className="mb-3">
-        <Form.Label>Attach Documents</Form.Label>
-        {allDocuments.length === 0 ? (
-          <>
-            <Form.Control as="select" multiple disabled>
-              <option>No documents available.</option>
-            </Form.Control>
-            <Form.Text className="text-muted">
-              Go to <strong>Documents</strong> page to upload.
-            </Form.Text>
-          </>
-        ) : (
-          <Form.Control
-            as="select"
-            multiple
-            name="documents"
-            value={formData.documents.map(id => String(id))}
-            onChange={handleDocumentSelectChange}
+        <Form.Label>Add Existing Document</Form.Label>
+        <div className="d-flex align-items-center">
+          <Form.Select
+            value={pendingDocId}
+            onChange={(e) => setPendingDocId(e.target.value)}
+            style={{ maxWidth: '70%' }}
           >
-            {allDocuments.map(renderDocumentOption)}
-          </Form.Control>
-        )}
+            <option value="">Select Document</option>
+            {allDocuments.map(doc => {
+              const label = doc.original_filename || doc.file_name;
+              return (
+                <option key={doc.document_id} value={String(doc.document_id)}>
+                  {label}
+                </option>
+              );
+            })}
+          </Form.Select>
+          <Button
+            variant="outline-primary"
+            size="sm"
+            className="ms-2"
+            onClick={handleAddExistingDoc}
+          >
+            Add
+          </Button>
+        </div>
       </Form.Group>
 
+      {/* Upload new doc */}
       <Form.Group controlId="uploadNewDoc" className="mb-3">
         <Form.Label>Upload New Document (optional)</Form.Label>
-        <InputGroup>
+        <InputGroup className="mb-2">
           <Form.Control type="file" onChange={handleFileChange} />
-          <Button variant="outline-secondary" onClick={handleUploadNewDoc} disabled={isSubmitting || !newFile}>
-            {isSubmitting ? 'Uploading...' : 'Upload'}
-          </Button>
         </InputGroup>
+        <Form.Control
+          type="text"
+          placeholder="Tag (optional)"
+          value={newFileTag}
+          onChange={(e) => setNewFileTag(e.target.value)}
+          className="mb-2"
+        />
+        <Button variant="outline-secondary" onClick={handleUploadNewDoc} disabled={isSubmitting || !newFile}>
+          {isSubmitting ? 'Uploading...' : 'Upload'}
+        </Button>
       </Form.Group>
 
+      {/* Footer Buttons */}
       <div className="d-flex justify-content-end">
         {mode === 'edit' && taskData && taskData.task_id && (
           <Button
@@ -433,28 +614,96 @@ function TaskForm({
               <Spinner as="span" animation="border" size="sm" className="me-2" />
               Saving...
             </>
-          ) : mode === 'edit' ? 'Save Changes' : 'Create Task'}
+          ) : (mode === 'edit' ? 'Save Changes' : 'Create Task')}
         </Button>
       </div>
     </Form>
   );
 
+  // If using as a modal
   if (isModal) {
     return (
-      <Modal show onHide={onCancel} size="lg">
-        <Modal.Header closeButton>
-          <Modal.Title>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</Modal.Title>
-        </Modal.Header>
-        <Modal.Body>{formContent}</Modal.Body>
-      </Modal>
+      <>
+        <Modal show onHide={onCancel} size="lg">
+          <Modal.Header closeButton>
+            <Modal.Title>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</Modal.Title>
+          </Modal.Header>
+          <Modal.Body>{formContent}</Modal.Body>
+        </Modal>
+
+        {/* Document Preview Modal */}
+        <Modal show={showDocPreview} onHide={closeDocPreview} size="lg">
+          <Modal.Header closeButton>
+            <Modal.Title>
+              {previewDoc
+                ? (previewDoc.original_filename || previewDoc.file_name)
+                : 'Document Preview'
+              }
+            </Modal.Title>
+          </Modal.Header>
+          <Modal.Body>
+            {previewDoc?.file_url ? (
+              previewDoc.file_url.toLowerCase().endsWith('.pdf') ? (
+                <iframe
+                  src={previewDoc.file_url}
+                  title="PDF Preview"
+                  style={{ width: '100%', height: '70vh' }}
+                />
+              ) : (
+                <img
+                  src={previewDoc.file_url}
+                  alt="document"
+                  style={{ maxWidth: '100%' }}
+                />
+              )
+            ) : (
+              <p>Unable to preview this document.</p>
+            )}
+          </Modal.Body>
+        </Modal>
+      </>
     );
   }
 
+  // If not a modal
   return (
-    <div className="task-form-page">
-      <h2>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</h2>
-      {formContent}
-    </div>
+    <>
+      <div className="task-form-page">
+        <h2>{mode === 'edit' ? 'Edit Task' : 'Add Task'}</h2>
+        {formContent}
+      </div>
+
+      {/* Document Preview Modal (non-modal usage) */}
+      <Modal show={showDocPreview} onHide={closeDocPreview} size="lg">
+        <Modal.Header closeButton>
+          <Modal.Title>
+            {previewDoc
+              ? (previewDoc.original_filename || previewDoc.file_name)
+              : 'Document Preview'
+            }
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {previewDoc?.file_url ? (
+            previewDoc.file_url.toLowerCase().endsWith('.pdf') ? (
+              <iframe
+                src={previewDoc.file_url}
+                title="PDF Preview"
+                style={{ width: '100%', height: '70vh' }}
+              />
+            ) : (
+              <img
+                src={previewDoc.file_url}
+                alt="document"
+                style={{ maxWidth: '100%' }}
+              />
+            )
+          ) : (
+            <p>Unable to preview this document.</p>
+          )}
+        </Modal.Body>
+      </Modal>
+    </>
   );
 }
 
@@ -534,13 +783,22 @@ export default Header;
 --- frontend/src/components/StagesSection.js ---
 
 // src/components/StagesSection.js
-import React, { useState } from 'react';
+
+import React, { useState, useContext } from 'react';
 import axios from 'axios';
 import { toast } from 'react-toastify';
 import TaskForm from './TaskForm';
-import { Accordion, Table, Button, OverlayTrigger, Tooltip } from 'react-bootstrap';
+import { Accordion, Table, Button, OverlayTrigger, Tooltip, Badge } from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
 import { FaCheck, FaCheckCircle, FaPaperclip } from 'react-icons/fa';
+import { UserContext } from '../context/UserContext';
+
+/**
+ * StagesSection
+ * - Now includes a count of how many incomplete tasks are assigned to the current user
+ *   in each stage, displayed as a Badge in the stage header.
+ * - Also highlights tasks that are assigned to the user in the table.
+ */
 
 function StagesSection({ projectId, stages, refetchProject, collaborators = [] }) {
   const [showTaskForm, setShowTaskForm] = useState(false);
@@ -548,6 +806,8 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
   const [mode, setMode] = useState('create');
 
   const navigate = useNavigate();
+  const { user } = useContext(UserContext);
+  const currentUserId = user?.user_id || null;
 
   // Edit Task
   const handleEditTask = async (task) => {
@@ -557,6 +817,8 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
         toast.warn('You must be logged in to edit a task.');
         return;
       }
+
+      // Attempt to fetch the full task data
       const response = await axios.get(`${process.env.REACT_APP_API_URL}/tasks/${task.task_id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -564,7 +826,16 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
       setMode('edit');
       setShowTaskForm(true);
     } catch (error) {
-      toast.error('Failed to fetch task for editing.');
+      // If we get a 403 or 404, we can show the appropriate message
+      if (error.response && error.response.status === 403) {
+        // Possibly avoid duplicated toast if your interceptor does it,
+        // but let's show something user-friendly:
+        toast.error('You do not have permission to edit this task.');
+      } else if (error.response && error.response.status === 404) {
+        toast.error('Task not found or insufficient permissions.');
+      } else {
+        toast.error('Failed to fetch task for editing.');
+      }
     }
   };
 
@@ -590,20 +861,31 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
       return;
     }
     try {
-      await axios.put(`${process.env.REACT_APP_API_URL}/tasks/${task.task_id}/complete`, {}, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/tasks/${task.task_id}/complete`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       toast.success('Task marked as completed!');
       refetchProject();
     } catch (err) {
-      toast.error('Could not complete task.');
+      if (err.response && err.response.status === 403) {
+        toast.error('You do not have permission to complete this task.');
+      } else if (err.response && err.response.status === 404) {
+        toast.error('Task not found or insufficient permissions.');
+      } else {
+        toast.error('Could not complete task.');
+      }
     }
   };
 
+  /**
+   * Render attachments tooltip
+   */
   const renderDocsTooltip = (task) => {
     if (!task.documents || task.documents.length === 0) return null;
 
-    const docLines = task.documents.map((d, idx) => {
+    const docLines = task.documents.map((d) => {
       const tag = d.tags && d.tags.length > 0 ? d.tags[0] : '(No Tag)';
       const orig = d.original_filename || d.file_name || 'unknown';
       const user = d.uploaded_by || 'unknown user';
@@ -618,17 +900,35 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
     return (
       <OverlayTrigger
         placement="top"
-        overlay={<Tooltip id={`tooltip-docs-${task.task_id}`}>{docLines}</Tooltip>}
+        overlay={
+          <Tooltip id={`tooltip-docs-${task.task_id}`}>
+            {docLines}
+          </Tooltip>
+        }
       >
         <FaPaperclip style={{ marginLeft: '8px', cursor: 'pointer' }} />
       </OverlayTrigger>
     );
   };
 
+  /**
+   * Renders the Task cell, highlighting if assigned to the current user
+   */
   const renderTaskCell = (task) => {
     const isCompleted = task.is_completed;
+    // Check if current user is assigned
+    const isAssigned = task.assigned_users?.some((u) => u.user_id === currentUserId);
+
+    // We'll color code or bold the text if the user is assigned
+    const style = {
+      fontWeight: isAssigned ? 'bold' : 'normal',
+      color: isAssigned ? '#0d6efd' : 'inherit', // e.g. bootstrap's primary color
+      display: 'flex',
+      alignItems: 'center',
+    };
+
     return (
-      <div style={{ display: 'flex', alignItems: 'center' }}>
+      <div style={style}>
         {task.task_name}
         {isCompleted && (
           <FaCheckCircle size="1em" style={{ color: 'green', marginLeft: '5px' }} />
@@ -636,6 +936,20 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
         {task.documents && task.documents.length > 0 && renderDocsTooltip(task)}
       </div>
     );
+  };
+
+  /**
+   * Count how many incomplete tasks in a stage are assigned to the current user
+   */
+  const countUserIncompleteAssignedTasks = (stage) => {
+    if (!currentUserId) return 0;
+    if (!stage.tasks || stage.tasks.length === 0) return 0;
+    let count = 0;
+    stage.tasks.forEach((task) => {
+      const isAssigned = task.assigned_users?.some((u) => u.user_id === currentUserId);
+      if (isAssigned && !task.is_completed) count += 1;
+    });
+    return count;
   };
 
   return (
@@ -651,65 +965,82 @@ function StagesSection({ projectId, stages, refetchProject, collaborators = [] }
         <Accordion defaultActiveKey="0" alwaysOpen>
           {stages
             .sort((a, b) => a.stage_order - b.stage_order)
-            .map((stage, idx) => (
-              <Accordion.Item eventKey={String(idx)} key={stage.stage_id}>
-                <Accordion.Header>
-                  <strong>Stage {stage.stage_order}: {stage.stage_name}</strong>
-                </Accordion.Header>
-                <Accordion.Body>
-                  {stage.tasks && stage.tasks.length > 0 ? (
-                    <div className="table-responsive">
-                      <Table hover borderless>
-                        <thead>
-                          <tr>
-                            <th>Task</th>
-                            <th>Due Date</th>
-                            <th style={{ width: '30%' }}>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {stage.tasks.map((task) => {
-                            const isCompleted = task.is_completed;
-                            return (
-                              <tr key={task.task_id}
-                                style={{
-                                  backgroundColor: isCompleted ? '#e2e3e5' : '',
-                                  opacity: isCompleted ? 0.8 : 1,
-                                }}
-                              >
-                                <td>{renderTaskCell(task)}</td>
-                                <td>{task.due_date ? new Date(task.due_date).toLocaleDateString() : '-'}</td>
-                                <td>
-                                  <Button
-                                    variant="outline-success"
-                                    size="sm"
-                                    className="me-2"
-                                    disabled={isCompleted}
-                                    onClick={() => handleCompleteTask(task)}
-                                  >
-                                    <FaCheck />
-                                  </Button>
-                                  <Button
-                                    variant="outline-primary"
-                                    size="sm"
-                                    className="me-2"
-                                    onClick={() => handleEditTask(task)}
-                                  >
-                                    Edit
-                                  </Button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </Table>
-                    </div>
-                  ) : (
-                    <p>No tasks in this stage yet.</p>
-                  )}
-                </Accordion.Body>
-              </Accordion.Item>
-            ))}
+            .map((stage, idx) => {
+              const assignedIncompleteCount = countUserIncompleteAssignedTasks(stage);
+
+              return (
+                <Accordion.Item eventKey={String(idx)} key={stage.stage_id}>
+                  <Accordion.Header>
+                    <strong>
+                      Stage {stage.stage_order}: {stage.stage_name}
+                    </strong>
+                    {assignedIncompleteCount > 0 && (
+                      <Badge bg="info" className="ms-2">
+                        {assignedIncompleteCount} task
+                        {assignedIncompleteCount > 1 ? 's' : ''} assigned to you
+                      </Badge>
+                    )}
+                  </Accordion.Header>
+                  <Accordion.Body>
+                    {stage.tasks && stage.tasks.length > 0 ? (
+                      <div className="table-responsive">
+                        <Table hover borderless>
+                          <thead>
+                            <tr>
+                              <th>Task</th>
+                              <th>Due Date</th>
+                              <th style={{ width: '30%' }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {stage.tasks.map((task) => {
+                              const isCompleted = task.is_completed;
+                              return (
+                                <tr
+                                  key={task.task_id}
+                                  style={{
+                                    backgroundColor: isCompleted ? '#e2e3e5' : '',
+                                    opacity: isCompleted ? 0.8 : 1,
+                                  }}
+                                >
+                                  <td>{renderTaskCell(task)}</td>
+                                  <td>
+                                    {task.due_date
+                                      ? new Date(task.due_date).toLocaleDateString()
+                                      : '-'}
+                                  </td>
+                                  <td>
+                                    <Button
+                                      variant="outline-success"
+                                      size="sm"
+                                      className="me-2"
+                                      disabled={isCompleted}
+                                      onClick={() => handleCompleteTask(task)}
+                                    >
+                                      <FaCheck />
+                                    </Button>
+                                    <Button
+                                      variant="outline-primary"
+                                      size="sm"
+                                      className="me-2"
+                                      onClick={() => handleEditTask(task)}
+                                    >
+                                      Edit
+                                    </Button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </Table>
+                      </div>
+                    ) : (
+                      <p>No tasks in this stage yet.</p>
+                    )}
+                  </Accordion.Body>
+                </Accordion.Item>
+              );
+            })}
         </Accordion>
       ) : (
         <p>No stages found.</p>
@@ -750,12 +1081,12 @@ import {
   Form, 
   Modal, 
   Spinner, 
-  OverlayTrigger, // Imported OverlayTrigger
-  Tooltip          // Imported Tooltip
-} from 'react-bootstrap'; // Added OverlayTrigger and Tooltip to imports
+  OverlayTrigger,
+  Tooltip
+} from 'react-bootstrap';
 import { useNavigate } from 'react-router-dom';
-import ConfirmModal from './ConfirmModal'; // Import ConfirmModal
-import { v4 as uuidv4 } from 'uuid'; // Import uuid for unique IDs
+import ConfirmModal from './ConfirmModal';
+import { v4 as uuidv4 } from 'uuid';
 
 const roleOptions = [
   { value: '0', label: 'Buyer' },
@@ -780,6 +1111,8 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
   const [isAdding, setIsAdding] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [collaboratorToDelete, setCollaboratorToDelete] = useState(null);
+  const [isApproving, setIsApproving] = useState(false);
+
   const navigate = useNavigate();
 
   const handleAddCollaborator = async (e) => {
@@ -811,10 +1144,12 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
 
   const handleDeleteCollaborator = async () => {
     const token = localStorage.getItem('jwtToken');
+    if (!collaboratorToDelete) return;
     try {
-      await axios.delete(`${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaboratorToDelete.collaborator_id}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await axios.delete(
+        `${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collaboratorToDelete.collaborator_id}`, 
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       toast.success('Collaborator removed successfully!');
       setShowDeleteModal(false);
       setCollaboratorToDelete(null);
@@ -825,63 +1160,22 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
     }
   };
 
-  const getCollaboratorInfo = (userId) => {
-    const collab = collaborators.find(c => c.user_id === userId);
-    if (!collab || !collab.user) return { name: 'Unknown', role: 'Unknown' };
-    const name = `${collab.user.first_name || ''} ${collab.user.last_name || ''}`.trim() || 'Unknown';
-    const roleLabel = getRoleLabel(collab.role);
-    return { name, role: roleLabel };
-  };
-
-  const renderAssignedUsers = (task) => {
-    if (!task.assigned_users || task.assigned_users.length === 0) {
-      return <span className="text-muted">None</span>;
-    }
-
-    const assignedDetails = task.assigned_users.map(u => getCollaboratorInfo(u.user_id));
-    const displayLimit = 2;
-
-    if (assignedDetails.length <= displayLimit) {
-      return (
-        <>
-          {assignedDetails.map((a, idx) => (
-            <span key={idx} className="me-2">
-              {a.name} ({a.role})
-            </span>
-          ))}
-        </>
+  const handleApproveCollaborator = async (collab) => {
+    try {
+      setIsApproving(true);
+      const token = localStorage.getItem('jwtToken');
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/projects/${projectId}/collaborators/${collab.collaborator_id}/approve`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
       );
-    } else {
-      const firstTwo = assignedDetails.slice(0, displayLimit);
-      const remaining = assignedDetails.slice(displayLimit);
-      const tooltipId = uuidv4(); // Unique ID
-
-      const tooltip = (
-        <Tooltip id={tooltipId}>
-          {remaining.map((a, idx) => (
-            <div key={idx}>
-              {a.name} ({a.role})
-            </div>
-          ))}
-        </Tooltip>
-      );
-
-      return (
-        <>
-          {firstTwo.map((a, idx) => (
-            <span key={idx} className="me-2">
-              {a.name} ({a.role})
-            </span>
-          ))}
-          {remaining.length > 0 && (
-            <OverlayTrigger overlay={tooltip} placement="right">
-              <span className="text-primary" style={{ cursor: 'pointer' }}>
-                +{remaining.length} more
-              </span>
-            </OverlayTrigger>
-          )}
-        </>
-      );
+      toast.success('Collaborator approved!');
+      refetchCollaborators();
+    } catch (error) {
+      console.error('Error approving collaborator:', error);
+      toast.error('Failed to approve collaborator.');
+    } finally {
+      setIsApproving(false);
     }
   };
 
@@ -894,6 +1188,7 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
             <thead>
               <tr>
                 <th>Name & Role</th>
+                <th>Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -901,10 +1196,29 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
               {collaborators.map((collab) => {
                 const name = `${collab.user?.first_name || ''} ${collab.user?.last_name || ''}`.trim() || 'Unknown User';
                 const roleLabel = getRoleLabel(collab.role);
+                const awaiting = collab.awaiting_approval;
+
                 return (
                   <tr key={collab.collaborator_id}>
                     <td>{name} ({roleLabel})</td>
                     <td>
+                      {awaiting
+                        ? <span className="text-warning">Pending Approval</span>
+                        : <span className="text-success">Approved</span>
+                      }
+                    </td>
+                    <td>
+                      {awaiting && (
+                        <Button 
+                          variant="outline-success"
+                          size="sm"
+                          disabled={isApproving}
+                          onClick={() => handleApproveCollaborator(collab)}
+                          className="me-2"
+                        >
+                          Approve
+                        </Button>
+                      )}
                       <Button
                         variant="outline-danger"
                         size="sm"
@@ -926,7 +1240,11 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
         <p>No collaborators found.</p>
       )}
 
-      <Button variant={showAddForm ? 'secondary' : 'success'} className="mt-3" onClick={() => setShowAddForm(!showAddForm)}>
+      <Button 
+        variant={showAddForm ? 'secondary' : 'success'}
+        className="mt-3"
+        onClick={() => setShowAddForm(!showAddForm)}
+      >
         {showAddForm ? 'Cancel' : 'Add Collaborator'}
       </Button>
 
@@ -955,7 +1273,9 @@ function CollaboratorsSection({ projectId, collaborators, refetchCollaborators }
                 onChange={(e) => setNewCollaboratorRole(e.target.value)}
               >
                 {roleOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
                 ))}
               </Form.Control>
             </Form.Group>
@@ -1255,7 +1575,6 @@ export default Profile;
 --- frontend/src/pages/DocumentsPage.js ---
 
 // src/pages/DocumentsPage.js
-
 import React, { useEffect, useState } from 'react';
 import {
   Container,
@@ -1268,12 +1587,13 @@ import {
   Badge,
   OverlayTrigger,
   Tooltip,
-  Modal
+  Modal,
 } from 'react-bootstrap';
 import { toast } from 'react-toastify';
 import axios from 'axios';
 import Header from '../components/Header';
-import { FaSearchPlus } from 'react-icons/fa';
+import ConfirmModal from '../components/ConfirmModal'; // Reuse existing ConfirmModal
+import { FaSearchPlus, FaTrash, FaEdit } from 'react-icons/fa';
 
 // Default tags
 const defaultTags = [
@@ -1287,13 +1607,24 @@ function DocumentsPage() {
   const [documents, setDocuments] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // For uploading
   const [selectedFile, setSelectedFile] = useState(null);
   const [selectedTags, setSelectedTags] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
 
-  // For preview
+  // Preview
   const [showPreview, setShowPreview] = useState(false);
   const [previewDoc, setPreviewDoc] = useState(null);
+
+  // Delete
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [docToDelete, setDocToDelete] = useState(null);
+
+  // Edit (update)
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [docToEdit, setDocToEdit] = useState(null);
+  const [editTags, setEditTags] = useState([]);
+  const [editFilename, setEditFilename] = useState('');
 
   useEffect(() => {
     fetchDocuments();
@@ -1315,6 +1646,7 @@ function DocumentsPage() {
     }
   };
 
+  // ------------------ File Upload ------------------
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       setSelectedFile(e.target.files[0]);
@@ -1357,7 +1689,11 @@ function DocumentsPage() {
     }
   };
 
-  const isPDF = (url) => url.toLowerCase().endsWith('.pdf');
+  // ------------------ Preview ------------------
+  const isPDF = (url) => {
+    // If your backend sets a .pdf extension, or correct content-type, a browser can preview inline
+    return url.toLowerCase().endsWith('.pdf');
+  };
 
   const handlePreviewClick = (doc) => {
     setPreviewDoc(doc);
@@ -1369,32 +1705,102 @@ function DocumentsPage() {
     setPreviewDoc(null);
   };
 
-  // Tooltip for doc's original filename, user, date
+  // ------------------ Delete ------------------
+  const handleDeleteClick = (doc) => {
+    setDocToDelete(doc);
+    setShowDeleteModal(true);
+  };
+
+  const confirmDeleteDocument = async () => {
+    if (!docToDelete) return;
+    try {
+      const token = localStorage.getItem('jwtToken');
+      await axios.delete(
+        `${process.env.REACT_APP_API_URL}/documents/${docToDelete.document_id}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Document deleted successfully!');
+      setDocuments(prev => prev.filter(d => d.document_id !== docToDelete.document_id));
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      toast.error('Failed to delete document.');
+    } finally {
+      setDocToDelete(null);
+      setShowDeleteModal(false);
+    }
+  };
+
+  // ------------------ Edit (Update) ------------------
+  const handleEditClick = (doc) => {
+    setDocToEdit(doc);
+    setEditFilename(doc.original_filename || doc.file_name || '');
+    setEditTags(doc.tags || []);
+    setShowEditModal(true);
+  };
+
+  const handleEditTagChange = (e) => {
+    const sel = Array.from(e.target.selectedOptions).map(opt => opt.value);
+    setEditTags(sel);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!docToEdit) return;
+    try {
+      const token = localStorage.getItem('jwtToken');
+      // PUT request to update doc
+      await axios.put(
+        `${process.env.REACT_APP_API_URL}/documents/${docToEdit.document_id}`,
+        {
+          original_filename: editFilename,
+          tags: editTags,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      toast.success('Document updated!');
+      // Refresh the entire list
+      fetchDocuments();
+    } catch (error) {
+      console.error('Error updating document:', error);
+      toast.error('Failed to update document.');
+    } finally {
+      setShowEditModal(false);
+      setDocToEdit(null);
+    }
+  };
+
+  // ------------------ Tooltip Helper ------------------
   const renderDocTooltip = (doc) => {
-    const original = doc.original_filename || doc.file_name || 'unknown filename';
-    const user = doc.uploaded_by || 'unknown user';
+    const user = doc.uploaded_by || 'Unknown user';
     const dateStr = doc.uploaded_date ? new Date(doc.uploaded_date).toLocaleString() : 'unknown date';
+    const fullName = doc.original_filename || doc.file_name; // e.g. "mydoc.pdf" or "abc123.pdf"
     return (
       <Tooltip>
-        {original}<br/>
-        Uploaded by: {user}<br/>
+        {fullName}
+        <br />
+        Uploaded by: {user}
+        <br />
         {dateStr}
       </Tooltip>
     );
   };
 
-  // Show doc's main "tag" as the card title
+  // **This is the updated logic**: The Title is the "Name" of the file
   const renderDocTitle = (doc) => {
-    const primaryTag = (doc.tags && doc.tags.length > 0) ? doc.tags[0] : 'No Tags';
+    // If doc.original_filename is present, use that, else fallback to doc.file_name
+    const docTitle = doc.original_filename?.trim() 
+      ? doc.original_filename 
+      : doc.file_name;
+
     return (
       <OverlayTrigger placement="top" overlay={renderDocTooltip(doc)}>
         <span style={{ cursor: doc.file_url ? 'pointer' : 'default' }}>
-          {primaryTag}
+          {docTitle}
         </span>
       </OverlayTrigger>
     );
   };
 
+  // ------------------ Main Render ------------------
   return (
     <>
       <Header />
@@ -1447,18 +1853,22 @@ function DocumentsPage() {
           <Row xs={1} md={2} lg={3} className="g-4">
             {documents.map((doc) => (
               <Col key={doc.document_id}>
-                <Card className="h-100">
-                  <Card.Body>
-                    <Card.Title className="d-flex justify-content-between">
-                      {renderDocTitle(doc)}
+                <Card className="h-100 d-flex flex-column">
+                  <Card.Body className="d-flex flex-column">
+                    <div className="d-flex justify-content-between align-items-center mb-2">
+                      {/* Render name-based Title */}
+                      <Card.Title className="m-0">
+                        {renderDocTitle(doc)}
+                      </Card.Title>
                       {doc.file_url && (
                         <FaSearchPlus
                           style={{ cursor: 'pointer' }}
                           onClick={() => handlePreviewClick(doc)}
                         />
                       )}
-                    </Card.Title>
+                    </div>
 
+                    {/* Show tags (if any) below the name */}
                     <div className="mb-2">
                       {doc.tags && doc.tags.length > 0 ? (
                         doc.tags.map((t, idx) => (
@@ -1478,10 +1888,31 @@ function DocumentsPage() {
                         href={doc.file_url}
                         target="_blank"
                         rel="noopener noreferrer"
+                        className="mb-2"
                       >
                         View / Download
                       </Button>
                     )}
+
+                    {/* Edit / Delete buttons */}
+                    <div className="mt-auto d-flex justify-content-between">
+                      <Button 
+                        variant="outline-warning" 
+                        size="sm" 
+                        onClick={() => handleEditClick(doc)}
+                      >
+                        <FaEdit className="me-1" />
+                        Edit
+                      </Button>
+                      <Button 
+                        variant="outline-danger" 
+                        size="sm" 
+                        onClick={() => handleDeleteClick(doc)}
+                      >
+                        <FaTrash className="me-1" />
+                        Delete
+                      </Button>
+                    </div>
                   </Card.Body>
                 </Card>
               </Col>
@@ -1495,11 +1926,9 @@ function DocumentsPage() {
         <Modal.Header closeButton>
           <Modal.Title>
             {previewDoc
-              ? (previewDoc.tags && previewDoc.tags.length > 0
-                  ? previewDoc.tags[0]
-                  : 'Document Preview'
-                )
-              : 'Document Preview'}
+              ? (previewDoc.original_filename || previewDoc.file_name)
+              : 'Document Preview'
+            }
           </Modal.Title>
         </Modal.Header>
         <Modal.Body>
@@ -1521,6 +1950,60 @@ function DocumentsPage() {
             <p>Unable to preview this document.</p>
           )}
         </Modal.Body>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        show={showDeleteModal}
+        handleClose={() => setShowDeleteModal(false)}
+        handleConfirm={confirmDeleteDocument}
+        title="Confirm Document Deletion"
+        body={`Are you sure you want to delete "${
+          docToDelete?.original_filename || docToDelete?.file_name
+        }"? This action cannot be undone.`}
+      />
+
+      {/* Edit Document Modal */}
+      <Modal show={showEditModal} onHide={() => setShowEditModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Edit Document</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <Form.Group className="mb-3" controlId="editFilename">
+            <Form.Label>Original Filename:</Form.Label>
+            <Form.Control
+              type="text"
+              value={editFilename}
+              onChange={(e) => setEditFilename(e.target.value)}
+            />
+          </Form.Group>
+          <Form.Group className="mb-3" controlId="editTags">
+            <Form.Label>Tags:</Form.Label>
+            <Form.Control
+              as="select"
+              multiple
+              value={editTags}
+              onChange={handleEditTagChange}
+            >
+              {defaultTags.map((tag) => (
+                <option key={tag} value={tag}>
+                  {tag}
+                </option>
+              ))}
+            </Form.Control>
+            <Form.Text className="text-muted">
+              Hold Ctrl (Windows) or Cmd (Mac) to select multiple tags.
+            </Form.Text>
+          </Form.Group>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowEditModal(false)}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleSaveEdit}>
+            Save
+          </Button>
+        </Modal.Footer>
       </Modal>
     </>
   );
@@ -3005,33 +3488,40 @@ import CreateTaskPage from './pages/CreateTaskPage';
 import EditTaskPage from './pages/EditTaskPage';
 import DocumentsPage from './pages/DocumentsPage'; // <-- Add your DocumentsPage
 import ProtectedRoute from './components/ProtectedRoute';
-import { ToastContainer } from 'react-toastify';
+import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './styles.css';
 
-// 1) Axios setup to handle token expiration gracefully
+// 1) Axios setup to handle token expiration or permission issues gracefully
 import axios from 'axios';
-import { toast } from 'react-toastify';
 
 function setupAxiosInterceptors() {
   axios.interceptors.response.use(
     response => response,
     error => {
-      // If we get a 401 or 403, it may mean token expired or unauthorized
-      if (error.response && [401, 403].includes(error.response.status)) {
-        // Avoid repeated toasts by checking a flag
+      if (!error.response) {
+        // If it's a network error or no response at all
+        toast.error('Network error. Please check your connection.');
+        return Promise.reject(error);
+      }
+
+      const { status } = error.response;
+      // If we get a 401, it likely means token expired or invalid
+      if (status === 401) {
         if (!window.__expiredToastShown__) {
           window.__expiredToastShown__ = true;
           toast.warn('Your session has expired. Please log in again.');
           // Force logout
           localStorage.removeItem('jwtToken');
-          // Refresh page or redirect to login
+          // Reload or redirect
           window.location.href = '/login';
         }
-      } else if (!error.response) {
-        // If it's a network error or no response
-        toast.error('Network error. Please check your connection.');
+      } 
+      // If we get a 403, user is logged in but lacks permission
+      else if (status === 403) {
+        toast.warn('You do not have permission to view this resource.');
       }
+
       return Promise.reject(error);
     }
   );
@@ -3112,7 +3602,7 @@ function App() {
           }
         />
 
-        {/* New Documents Route */}
+        {/* Documents Route */}
         <Route
           path="/documents"
           element={
@@ -3126,11 +3616,9 @@ function App() {
         <Route
           path="/"
           element={
-            localStorage.getItem('jwtToken') ? (
-              <Navigate to="/dashboard" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
+            localStorage.getItem('jwtToken')
+              ? <Navigate to="/dashboard" replace />
+              : <Navigate to="/login" replace />
           }
         />
 
