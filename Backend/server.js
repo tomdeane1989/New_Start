@@ -56,9 +56,9 @@ app.get('/api/protected', authMiddleware, (req, res) => {
 });
 
 // Database synchronization
-db.sequelize.sync({ alter: true })
-    .then(() => logger.info('Database synced successfully'))
-    .catch(err => logger.error('Database sync error:', err));
+//db.sequelize.sync({ alter: true })
+   // .then(() => logger.info('Database synced successfully'))
+   // .catch(err => logger.error('Database sync error:', err));
 
 // Use the centralized error handling middleware (should be after all routes)
 app.use(errorHandler);

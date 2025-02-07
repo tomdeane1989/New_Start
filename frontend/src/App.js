@@ -13,33 +13,40 @@ import CreateTaskPage from './pages/CreateTaskPage';
 import EditTaskPage from './pages/EditTaskPage';
 import DocumentsPage from './pages/DocumentsPage'; // <-- Add your DocumentsPage
 import ProtectedRoute from './components/ProtectedRoute';
-import { ToastContainer } from 'react-toastify';
+import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import './styles.css';
 
-// 1) Axios setup to handle token expiration gracefully
+// 1) Axios setup to handle token expiration or permission issues gracefully
 import axios from 'axios';
-import { toast } from 'react-toastify';
 
 function setupAxiosInterceptors() {
   axios.interceptors.response.use(
     response => response,
     error => {
-      // If we get a 401 or 403, it may mean token expired or unauthorized
-      if (error.response && [401, 403].includes(error.response.status)) {
-        // Avoid repeated toasts by checking a flag
+      if (!error.response) {
+        // If it's a network error or no response at all
+        toast.error('Network error. Please check your connection.');
+        return Promise.reject(error);
+      }
+
+      const { status } = error.response;
+      // If we get a 401, it likely means token expired or invalid
+      if (status === 401) {
         if (!window.__expiredToastShown__) {
           window.__expiredToastShown__ = true;
           toast.warn('Your session has expired. Please log in again.');
           // Force logout
           localStorage.removeItem('jwtToken');
-          // Refresh page or redirect to login
+          // Reload or redirect
           window.location.href = '/login';
         }
-      } else if (!error.response) {
-        // If it's a network error or no response
-        toast.error('Network error. Please check your connection.');
+      } 
+      // If we get a 403, user is logged in but lacks permission
+      else if (status === 403) {
+        toast.warn('You do not have permission to view this resource.');
       }
+
       return Promise.reject(error);
     }
   );
@@ -120,7 +127,7 @@ function App() {
           }
         />
 
-        {/* New Documents Route */}
+        {/* Documents Route */}
         <Route
           path="/documents"
           element={
@@ -134,11 +141,9 @@ function App() {
         <Route
           path="/"
           element={
-            localStorage.getItem('jwtToken') ? (
-              <Navigate to="/dashboard" replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
+            localStorage.getItem('jwtToken')
+              ? <Navigate to="/dashboard" replace />
+              : <Navigate to="/login" replace />
           }
         />
 
