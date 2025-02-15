@@ -51,7 +51,11 @@ async function setTaskDocuments(task_id, documentIds) {
   await TaskDocument.bulkCreate(refs);
 }
 
-// Create a new task
+/**
+ * Create a new task.
+ * Now sets owner_id = null (i.e. no single owner).
+ * Access depends solely on assigned_users.
+ */
 async function createTask(req, res) {
   try {
     const {
@@ -64,11 +68,9 @@ async function createTask(req, res) {
       assigned_users,
       documents,
     } = req.body;
-    const userId = req.user.id;
+    const userId = req.user.id; // The user creating the task, but not "owning" it.
 
-    logger.info(
-      `User ${userId} is creating a task in project ${project_id}, stage ${stage_id}`
-    );
+    logger.info(`User ${userId} is creating a task in project ${project_id}, stage ${stage_id}`);
 
     // Validate project and stage
     const project = await Project.findByPk(project_id);
@@ -83,7 +85,7 @@ async function createTask(req, res) {
       return res.status(400).json({ error: 'Stage not found for the given project.' });
     }
 
-    const finalDueDate = due_date && due_date.trim() !== '' ? due_date : null;
+    const finalDueDate = (due_date && due_date.trim() !== '') ? due_date : null;
 
     // Create the Task
     const task = await Task.create({
@@ -93,10 +95,11 @@ async function createTask(req, res) {
       description,
       due_date: finalDueDate,
       priority,
-      owner_id: userId,
+      // No explicit owner => null
+      owner_id: null,
     });
 
-    logger.info(`Task created: ${task.task_id} by user_id: ${userId}`);
+    logger.info(`Task created: ${task.task_id}, with no owner, by user_id=${userId}`);
 
     // Assign users if provided
     if (Array.isArray(assigned_users)) {
@@ -128,14 +131,17 @@ async function createTask(req, res) {
       ],
     });
 
-    res.status(201).json({ message: 'Task created successfully', task: updatedTask });
+    return res.status(201).json({ message: 'Task created successfully', task: updatedTask });
   } catch (error) {
     logger.error(`Error in createTask: ${error.message}`, error);
-    res.status(500).json({ error: 'Error creating task' });
+    return res.status(500).json({ error: 'Error creating task' });
   }
 }
 
-// Retrieve a specific task
+/**
+ * Retrieve a specific task.
+ * Access is granted ONLY if the user is in assigned_users.
+ */
 async function getTaskById(req, res) {
   try {
     const { task_id } = req.params;
@@ -149,6 +155,7 @@ async function getTaskById(req, res) {
       return res.status(400).json({ error: 'Invalid task_id. Must be an integer.' });
     }
 
+    // Fetch the task including assigned users
     const task = await Task.findByPk(parsedTaskId, {
       include: [
         {
@@ -159,11 +166,7 @@ async function getTaskById(req, res) {
             attributes: ['can_view', 'can_edit', 'awaiting_approval', 'assignment_id'],
           },
         },
-        {
-          model: User,
-          as: 'owner',
-          attributes: ['user_id', 'first_name', 'last_name', 'email'],
-        },
+        // We remove the 'owner' includes, because we no longer treat it as a permission factor
         {
           model: Stage,
           as: 'stage',
@@ -172,7 +175,7 @@ async function getTaskById(req, res) {
         {
           model: Project,
           as: 'project',
-          attributes: ['project_id', 'project_name', 'owner_id'],
+          attributes: ['project_id', 'project_name', 'owner_id'], // Might keep 'owner_id' for reference but we won't rely on it
         },
         {
           model: Document,
@@ -188,33 +191,41 @@ async function getTaskById(req, res) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
-    // Check project if user is a collaborator or project owner
-    const isProjectOwner = (task.project && task.project.owner_id === userId);
-    // Check if user is assigned
-    const isAssigned = task.assigned_users && task.assigned_users.some(u => u.user_id === userId);
+    // Check if user is assigned to the task
+    const isAssigned = task.assigned_users?.some(u => u.user_id === userId);
 
-    if (!isProjectOwner && !isAssigned) {
+    if (!isAssigned) {
       logger.warn(`User ${userId} does not have access to task ${parsedTaskId}.`);
       return res.status(403).json({ error: 'Insufficient permissions to view this task' });
     }
 
     logger.info(`Task retrieved successfully: ${parsedTaskId} for user ${userId}`);
-    res.status(200).json(task);
+    return res.status(200).json(task);
   } catch (error) {
     logger.error(`Error in getTaskById: ${error.message}`, error);
-    res.status(500).json({ error: 'Error retrieving task' });
+    return res.status(500).json({ error: 'Error retrieving task' });
   }
 }
 
-// GET all tasks for which you are assigned or owner
+/**
+ * GET all tasks the user is assigned to (or used to rely on owner_id).
+ * Now we skip owner_id checks entirely. We just check assigned_users.
+ */
 async function getTasksByUser(req, res) {
   try {
     const userId = req.user.id;
     logger.info(`Fetching tasks for user: ${userId}`);
 
+    // The user is assigned if they're in assigned_users
+    // If you truly want "ownerless," we skip the owner_id check
     const tasks = await Task.findAll({
       where: {
-        [Op.or]: [{ owner_id: userId }, { '$assigned_users.user_id$': userId }],
+        // We'll rely purely on assigned_users
+        // If you do want to keep tasks that had userId as an old "owner_id," remove or keep as you prefer
+        [Op.or]: [
+          // Remove the "owner" logic entirely, or keep it if you have old data
+          { '$assigned_users.user_id$': userId },
+        ],
       },
       include: [
         {
@@ -239,14 +250,18 @@ async function getTasksByUser(req, res) {
     });
 
     logger.info(`Tasks for user ${userId}: ${tasks.length}`);
-    res.status(200).json(tasks);
+    return res.status(200).json(tasks);
   } catch (error) {
     logger.error(`Error in getTasksByUser: ${error.message}`, error);
-    res.status(500).json({ error: 'Error fetching tasks' });
+    return res.status(500).json({ error: 'Error fetching tasks' });
   }
 }
 
-// Update task
+/**
+ * Update task
+ * Must have can_edit via TaskAssignment to do this.
+ * We no longer check owner_id at all.
+ */
 async function updateTask(req, res) {
   try {
     const { task_id } = req.params;
@@ -271,18 +286,9 @@ async function updateTask(req, res) {
 
     logger.info(`User ${userId} update task_id=${parsedTaskId}`);
 
-    // Only owner or can_edit = true can do this
+    // Only a user with can_edit = true can do this
     const task = await Task.findOne({
-      where: {
-        task_id: parsedTaskId,
-        [Op.or]: [
-          { owner_id: userId },
-          {
-            '$assigned_users.TaskAssignment.can_edit$': true,
-            '$assigned_users.user_id$': userId,
-          },
-        ],
-      },
+      where: { task_id: parsedTaskId },
       include: [
         {
           model: User,
@@ -294,8 +300,16 @@ async function updateTask(req, res) {
     });
 
     if (!task) {
-      logger.warn(`Task not found or no permission: task_id=${parsedTaskId}`);
+      logger.warn(`Task not found: task_id=${parsedTaskId}`);
       return res.status(404).json({ error: 'Task not found or insufficient permissions' });
+    }
+
+    // Check if the user has can_edit
+    const assignedRec = (task.assigned_users || []).find(u => u.user_id === userId);
+    const canEdit = assignedRec?.TaskAssignment?.can_edit ?? false;
+    if (!canEdit) {
+      logger.warn(`User ${userId} does not have can_edit on task_id=${parsedTaskId}`);
+      return res.status(403).json({ error: 'Insufficient permissions to edit this task' });
     }
 
     // Validate project/stage if present
@@ -314,7 +328,9 @@ async function updateTask(req, res) {
         return res.status(400).json({ error: 'Project not found.' });
       }
 
-      const stage = await Stage.findOne({ where: { stage_id: parsedStageId, project_id: parsedProjectId } });
+      const stage = await Stage.findOne({
+        where: { stage_id: parsedStageId, project_id: parsedProjectId },
+      });
       if (!stage) {
         logger.warn(`Stage not found for project`);
         return res.status(400).json({ error: 'Stage not found for the given project.' });
@@ -342,7 +358,7 @@ async function updateTask(req, res) {
       await setTaskDocuments(task.task_id, documents);
     }
 
-    // Refetch
+    // Refetch the updated task
     const updatedTask = await Task.findByPk(task.task_id, {
       include: [
         {
@@ -363,14 +379,17 @@ async function updateTask(req, res) {
     });
 
     logger.info(`Task updated successfully: ${parsedTaskId}`);
-    res.status(200).json({ message: 'Task updated', task: updatedTask });
+    return res.status(200).json({ message: 'Task updated', task: updatedTask });
   } catch (error) {
     logger.error(`Error in updateTask: ${error.message}`, error);
-    res.status(500).json({ error: 'Error updating task' });
+    return res.status(500).json({ error: 'Error updating task' });
   }
 }
 
-// Delete task
+/**
+ * Delete task
+ * Must have can_edit = true to do so. (We removed any owner references.)
+ */
 async function deleteTask(req, res) {
   try {
     const { task_id } = req.params;
@@ -385,16 +404,7 @@ async function deleteTask(req, res) {
     logger.info(`User ${userId} deleting task_id=${parsedTaskId}`);
 
     const task = await Task.findOne({
-      where: {
-        task_id: parsedTaskId,
-        [Op.or]: [
-          { owner_id: userId },
-          {
-            '$assigned_users.TaskAssignment.can_edit$': true,
-            '$assigned_users.user_id$': userId,
-          },
-        ],
-      },
+      where: { task_id: parsedTaskId },
       include: [
         {
           model: User,
@@ -405,20 +415,31 @@ async function deleteTask(req, res) {
     });
 
     if (!task) {
-      logger.warn(`Task not found or insufficient permissions: ${parsedTaskId}`);
+      logger.warn(`Task not found: ${parsedTaskId}`);
       return res.status(404).json({ error: 'Task not found or insufficient permissions' });
+    }
+
+    // Check can_edit
+    const assignedRec = (task.assigned_users || []).find(u => u.user_id === userId);
+    const canEdit = assignedRec?.TaskAssignment?.can_edit ?? false;
+    if (!canEdit) {
+      logger.warn(`User ${userId} does not have can_edit on task_id=${parsedTaskId}`);
+      return res.status(403).json({ error: 'Insufficient permissions to delete this task' });
     }
 
     await task.destroy();
     logger.info(`Task deleted: ${parsedTaskId}`);
-    res.status(200).json({ message: 'Task deleted successfully' });
+    return res.status(200).json({ message: 'Task deleted successfully' });
   } catch (error) {
     logger.error(`Error in deleteTask: ${error.message}`, error);
-    res.status(500).json({ error: 'Error deleting task' });
+    return res.status(500).json({ error: 'Error deleting task' });
   }
 }
 
-// Mark task as completed
+/**
+ * Mark task as completed
+ * Must be in assigned_users to do so. (We removed the "owner" override.)
+ */
 async function markTaskAsCompleted(req, res) {
   try {
     const { id: task_id } = req.params;
@@ -438,13 +459,8 @@ async function markTaskAsCompleted(req, res) {
         {
           model: TaskAssignment,
           as: 'taskAssignments',
-          where: { user_id: userId },
+          where: { user_id: userId }, // So we see if this user is assigned
           required: false,
-        },
-        {
-          model: Project,
-          as: 'project',
-          attributes: ['owner_id'],
         },
       ],
     });
@@ -454,11 +470,9 @@ async function markTaskAsCompleted(req, res) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
-    // Owner or assigned
-    const isOwner = task.project && task.project.owner_id === userId;
+    // Check if user is assigned
     const isAssigned = task.taskAssignments && task.taskAssignments.length > 0;
-
-    if (!isOwner && !isAssigned) {
+    if (!isAssigned) {
       logger.warn(`User ${userId} has no permission to complete task ${parsedTaskId}`);
       return res.status(403).json({ error: 'No permission to complete task' });
     }
@@ -467,14 +481,18 @@ async function markTaskAsCompleted(req, res) {
     await task.save();
 
     logger.info(`Task ${parsedTaskId} marked as completed by user ${userId}`);
-    res.status(200).json({ message: 'Task marked as completed', task });
+    return res.status(200).json({ message: 'Task marked as completed', task });
   } catch (error) {
     logger.error(`Error in markTaskAsCompleted: ${error.message}`, error);
-    res.status(500).json({ error: 'Error marking task as completed' });
+    return res.status(500).json({ error: 'Error marking task as completed' });
   }
 }
 
-// Approve assignment (if you still use this route)
+/**
+ * Approve assignment (if you still use this route).
+ * We removed the logic about project owner. 
+ * If you want to keep this or adapt it, you can decide who has the right to approve (maybe can_edit users).
+ */
 async function approveAssignee(req, res) {
   try {
     const { task_id, assignment_id } = req.params;
@@ -482,12 +500,17 @@ async function approveAssignee(req, res) {
 
     logger.info(`User ${userId} approving assignment ${assignment_id} for task ${task_id}`);
 
-    const task = await Task.findByPk(task_id, {
+    // If you remove the concept of project owner override, 
+    // you might check if the user has can_edit on the task instead:
+    const task = await Task.findOne({
+      where: { task_id },
       include: [
         {
-          model: Project,
-          as: 'project',
-          attributes: ['owner_id'],
+          model: User,
+          as: 'assigned_users',
+          where: { user_id: userId },
+          required: false,
+          through: { attributes: ['can_edit'] },
         },
       ],
     });
@@ -497,11 +520,14 @@ async function approveAssignee(req, res) {
       return res.status(404).json({ error: 'Task not found' });
     }
 
-    if (task.project.owner_id !== userId) {
-      logger.warn(`User ${userId} is not task owner for task_id=${task_id}`);
-      return res.status(403).json({ error: 'Only the project owner can approve assignees' });
+    const isAssigned = task.assigned_users && task.assigned_users.length > 0;
+    const canEdit = isAssigned && task.assigned_users[0].TaskAssignment.can_edit;
+    if (!canEdit) {
+      logger.warn(`User ${userId} cannot approve assignment for task ${task_id}`);
+      return res.status(403).json({ error: 'Insufficient permission to approve assignment' });
     }
 
+    // Now actually update the assignment
     const assignment = await TaskAssignment.findByPk(assignment_id);
     if (!assignment || assignment.task_id !== parseInt(task_id, 10)) {
       logger.warn(`Assignment not found or mismatch: assignment_id=${assignment_id}`);
@@ -517,10 +543,10 @@ async function approveAssignee(req, res) {
     await assignment.save();
 
     logger.info(`Assignee ${assignment_id} approved for task ${task_id}`);
-    res.status(200).json({ message: 'Assignee approved', assignment });
+    return res.status(200).json({ message: 'Assignee approved', assignment });
   } catch (error) {
     logger.error(`Error approving assignee: ${error.message}`, error);
-    res.status(500).json({ error: 'Error approving assignment' });
+    return res.status(500).json({ error: 'Error approving assignment' });
   }
 }
 
